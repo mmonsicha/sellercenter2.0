@@ -1,0 +1,708 @@
+{
+  "name": "order_receipes_a4",
+  "description": "Order receipt for A4 size",
+  "unit": "mm",
+  "width": 210,
+  "height": 297,
+  "page_margin": 12,
+  "header": {
+    "should_render_expression": "true",
+    "vertical_layout": {
+      "items": [
+        {
+          "should_render_expression": "true",
+          "horizontal_layout": {
+            "column_items": [
+              {
+                "item": {
+                  "should_render_expression": "true",
+                  "height_expression": "15",
+                  "width_expression": "15",
+                  "image_element": {
+                    "image_url_expression": "Data.seller.logo ?? \"\""
+                  }
+                },
+                "width_weight_expression": "1"
+              },
+              {
+                "item": {
+                  "should_render_expression": "true",
+                  "text_element": {
+                    "text_expression": "\"หน้า \" + string(Page) + \"/{totalPages}\"",
+                    "width_expression": "35",
+                    "font_expression": "\"DbHeavenRounded\"",
+                    "font_size_expression": "12",
+                    "align_expression": "\"right\"",
+                    "placeholder_expression": "true"
+                  }
+                },
+                "width_weight_expression": "1"
+              }
+            ]
+          }
+        },
+        {
+          "should_render_expression": "true",
+          "horizontal_layout": {
+            "column_items": [
+              {
+                "item": {
+                  "should_render_expression": "true",
+                  "vertical_layout": {
+                    "items": [
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "\"บริษัท \" + Data.seller.name",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "16",
+                          "bold_expression": "true",
+                          "line_height_expression": "1.5"
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "Data.seller.address ?? \"-\"",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "12",
+                          "line_wrap_expression": "true",
+                          "line_height_expression": "1.5"
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "\"เบอร์ติดต่อ : \" + Data.seller.phone ?? \"-\"",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "12",
+                          "line_height_expression": "1.5"
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "\"อีเมล : \" + Data.seller.email ?? \"-\"",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "12",
+                          "line_height_expression": "1.5"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "width_weight_expression": "5"
+              },
+              {
+                "item": {
+                  "should_render_expression": "true"
+                },
+                "width_weight_expression": "1"
+              },
+              {
+                "item": {
+                  "should_render_expression": "true",
+                  "vertical_layout": {
+                    "items": [
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "\"ใบเสร็จรับเงิน\"",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "20",
+                          "align_expression": "\"right\"",
+                          "underline_expression": "true",
+                          "line_height_expression": "1.5"
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "\"ต้นฉบับ\"",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "16",
+                          "align_expression": "\"right\""
+                        }
+                      }
+                    ]
+                  }
+                },
+                "width_weight_expression": "2"
+              }
+            ]
+          }
+        },
+        {
+          "should_render_expression": "true",
+          "margin": {
+            "top_expression": "5"
+          },
+          "horizontal_layout": {
+            "column_items": [
+              {
+                "item": {
+                  "should_render_expression": "Data.buyer.name != \"ลูกค้าหน้าร้าน\"",
+                  "vertical_layout": {
+                    "items": [
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "\"ลูกค้า\"",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "16",
+                          "line_height_expression": "1.5",
+                          "bold_expression": "true"
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "Data.buyer.name",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "16",
+                          "line_height_expression": "1.5",
+                          "bold_expression": "true"
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "Data.buyer.address ?? \"-\"",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "12",
+                          "line_wrap_expression": "true",
+                          "line_height_expression": "1.5"
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "\"เบอร์ติดต่อ : \" + Data.buyer.phone ?? \"-\"",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "12",
+                          "line_height_expression": "1.5"
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "\"อีเมล : \" + Data.buyer.email ?? \"-\"",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "12",
+                          "line_height_expression": "1.5"
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "item": {
+                  "should_render_expression": "true"
+                },
+                "width_weight_expression": "1"
+              },
+              {
+                "item": {
+                  "should_render_expression": "true",
+                  "vertical_layout": {
+                    "items": [
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "\"เลขที่เอกสาร : \" + Data.orderDocRef",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "12",
+                          "align_expression": "\"right\"",
+                          "line_height_expression": "1.5"
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "\"วันที่ออกเอกสาร : \" + date(Data.createdAt, \"2006-01-02T15:04:05Z07:00\").AddDate(543, 0, 0).Format(\"01/02/2006\")",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "12",
+                          "align_expression": "\"right\"",
+                          "line_height_expression": "1.5"
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "\"อ้างอิง : \" + Data.orderSerial",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "12",
+                          "line_wrap_expression": "true",
+                          "align_expression": "\"right\"",
+                          "line_height_expression": "1.5"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "should_render_expression": "true",
+          "margin": {
+            "top_expression": "5"
+          },
+          "horizontal_layout": {
+            "column_items": [
+              {
+                "width_weight_expression": "1",
+                "item": {
+                  "should_render_expression": "true",
+                  "height_expression": "8",
+                  "background_color_expression": "\"#F0F0F0\"",
+                  "text_element": {
+                    "text_expression": "",
+                    "font_expression": "\"DbHeavenRounded\"",
+                    "font_size_expression": "12",
+                    "bold_expression": "true"
+                  }
+                }
+              },
+              {
+                "width_weight_expression": "7",
+                "item": {
+                  "should_render_expression": "true",
+                  "height_expression": "8",
+                  "background_color_expression": "\"#F0F0F0\"",
+                  "text_element": {
+                    "text_expression": "\"รายการ\"",
+                    "font_expression": "\"DbHeavenRounded\"",
+                    "font_size_expression": "12",
+                    "bold_expression": "true"
+                  }
+                }
+              },
+              {
+                "width_weight_expression": "3",
+                "item": {
+                  "should_render_expression": "true",
+                  "height_expression": "8",
+                  "background_color_expression": "\"#F0F0F0\"",
+                  "text_element": {
+                    "text_expression": "\"จำนวน\"",
+                    "font_expression": "\"DbHeavenRounded\"",
+                    "font_size_expression": "12",
+                    "align_expression": "\"right\"",
+                    "bold_expression": "true"
+                  }
+                }
+              },
+              {
+                "width_weight_expression": "3",
+                "item": {
+                  "should_render_expression": "true",
+                  "height_expression": "8",
+                  "background_color_expression": "\"#F0F0F0\"",
+                  "text_element": {
+                    "text_expression": "\"ราคา/หน่วย\"",
+                    "font_expression": "\"DbHeavenRounded\"",
+                    "font_size_expression": "12",
+                    "align_expression": "\"right\"",
+                    "bold_expression": "true"
+                  }
+                }
+              },
+              {
+                "width_weight_expression": "3",
+                "item": {
+                  "should_render_expression": "true",
+                  "height_expression": "8",
+                  "background_color_expression": "\"#F0F0F0\"",
+                  "text_element": {
+                    "text_expression": "\"จำนวนเงิน\"",
+                    "font_expression": "\"DbHeavenRounded\"",
+                    "font_size_expression": "12",
+                    "align_expression": "\"right\"",
+                    "bold_expression": "true"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "body": {
+    "should_render_expression": "true",
+    "vertical_layout": {
+      "items": [
+        {
+          "should_render_expression": "true",
+          "table_element": {
+            "bind_expression": "Data.items",
+            "bind_key": "order_items",
+            "row_border": {
+              "width_expression": "1",
+              "style_expression": "\"solid\"",
+              "side_expression": "\"bottom\"",
+              "color_expression": "\"#E6E7E8\""
+            },
+            "row_margin": {
+              "vertical_expression": "3"
+            },
+            "columns": [
+              {
+                "width_weight_expression": "1",
+                "layout": {
+                  "should_render_expression": "true",
+                  "text_element": {
+                    "text_expression": "Variables.order_items.Index + 1",
+                    "font_expression": "\"DbHeavenRounded\"",
+                    "align_expression": "\"center\"",
+                    "font_size_expression": "12"
+                  }
+                }
+              },
+              {
+                "width_weight_expression": "7",
+                "layout": {
+                  "should_render_expression": "true",
+                  "vertical_layout": {
+                    "items": [
+                      {
+                        "should_render_expression": "true",
+                        "text_element": {
+                          "text_expression": "Variables.order_items.Row.productName",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "12",
+                          "line_wrap_expression": "true",
+                          "font_color_expression": "\"#142257\""
+                        }
+                      },
+                      {
+                        "should_render_expression": "Variables.order_items.Row.variants != nil",
+                        "text_element": {
+                          "text_expression": "FormatMap(Variables.order_items.Row.variants, \": \", \", \")",
+                          "font_expression": "\"DbHeavenRounded\"",
+                          "font_size_expression": "12",
+                          "line_wrap_expression": "true"
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "width_weight_expression": "3",
+                "layout": {
+                  "should_render_expression": "true",
+                  "text_element": {
+                    "text_expression": "CommaWithDecimal(Variables.order_items.Row.qty, 0)",
+                    "font_expression": "\"DbHeavenRounded\"",
+                    "font_size_expression": "12",
+                    "align_expression": "\"right\""
+                  }
+                }
+              },
+              {
+                "width_weight_expression": "3",
+                "layout": {
+                  "should_render_expression": "true",
+                  "text_element": {
+                    "text_expression": "CommaWithDecimal(Variables.order_items.Row.salePrice, 2)",
+                    "font_expression": "\"DbHeavenRounded\"",
+                    "font_size_expression": "12",
+                    "align_expression": "\"right\""
+                  }
+                }
+              },
+              {
+                "width_weight_expression": "3",
+                "layout": {
+                  "should_render_expression": "true",
+                  "text_element": {
+                    "text_expression": "CommaWithDecimal(Variables.order_items.Row.salePrice * Variables.order_items.Row.qty, 2)",
+                    "font_expression": "\"DbHeavenRounded\"",
+                    "font_size_expression": "12",
+                    "align_expression": "\"right\""
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "should_render_expression": "true",
+          "horizontal_layout": {
+            "prevent_separation_expression": "true",
+            "column_items": [
+              {
+                "item": {
+                  "should_render_expression": "true"
+                }
+              },
+              {
+                "width_weight_expression": "1",
+                "item": {
+                  "should_render_expression": "true",
+                  "vertical_layout": {
+                    "items": [
+                      {
+                        "should_render_expression": "true",
+                        "horizontal_layout": {
+                          "column_items": [
+                            {
+                              "item": {
+                                "should_render_expression": "true",
+                                "border": {
+                                  "width_expression": "1",
+                                  "style_expression": "\"solid\"",
+                                  "side_expression": "\"bottom\"",
+                                  "color_expression": "\"#E6E7E8\""
+                                },
+                                "margin": {
+                                  "vertical_expression": "3"
+                                },
+                                "text_element": {
+                                  "text_expression": "\"ราคารวมสินค้า\"",
+                                  "font_expression": "\"DbHeavenRounded\"",
+                                  "font_size_expression": "12",
+                                  "align_expression": "\"right\"",
+                                  "bold_expression": "true"
+                                }
+                              }
+                            },
+                            {
+                              "item": {
+                                "should_render_expression": "true",
+                                "border": {
+                                  "width_expression": "1",
+                                  "style_expression": "\"solid\"",
+                                  "side_expression": "\"bottom\"",
+                                  "color_expression": "\"#E6E7E8\""
+                                },
+                                "margin": {
+                                  "vertical_expression": "3"
+                                },
+                                "text_element": {
+                                  "text_expression": "CommaWithDecimal(Data.buyerStatement.totalPrice, 2) + \" บาท\"",
+                                  "align_expression": "\"right\"",
+                                  "font_expression": "\"DbHeavenRounded\"",
+                                  "font_size_expression": "12"
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "horizontal_layout": {
+                          "column_items": [
+                            {
+                              "item": {
+                                "should_render_expression": "true",
+                                "border": {
+                                  "width_expression": "1",
+                                  "style_expression": "\"solid\"",
+                                  "side_expression": "\"bottom\"",
+                                  "color_expression": "\"#E6E7E8\""
+                                },
+                                "margin": {
+                                  "vertical_expression": "3"
+                                },
+                                "text_element": {
+                                  "text_expression": "\"ส่วนลด\"",
+                                  "font_expression": "\"DbHeavenRounded\"",
+                                  "font_size_expression": "12",
+                                  "align_expression": "\"right\"",
+                                  "bold_expression": "true"
+                                }
+                              }
+                            },
+                            {
+                              "item": {
+                                "should_render_expression": "true",
+                                "border": {
+                                  "width_expression": "1",
+                                  "style_expression": "\"solid\"",
+                                  "side_expression": "\"bottom\"",
+                                  "color_expression": "\"#E6E7E8\""
+                                },
+                                "margin": {
+                                  "vertical_expression": "3"
+                                },
+                                "text_element": {
+                                  "text_expression": "CommaWithDecimal(Data.buyerStatement.totalPrice - Data.buyerStatement.netPrice, 2) + \" บาท\"",
+                                  "align_expression": "\"right\"",
+                                  "font_expression": "\"DbHeavenRounded\"",
+                                  "font_size_expression": "12"
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "should_render_expression": "Data.shippingFee > 0",
+                        "horizontal_layout": {
+                          "column_items": [
+                            {
+                              "item": {
+                                "should_render_expression": "true",
+                                "border": {
+                                  "width_expression": "1",
+                                  "style_expression": "\"solid\"",
+                                  "side_expression": "\"bottom\"",
+                                  "color_expression": "\"#E6E7E8\""
+                                },
+                                "margin": {
+                                  "vertical_expression": "3"
+                                },
+                                "text_element": {
+                                  "text_expression": "\"ค่าจัดส่ง\"",
+                                  "font_expression": "\"DbHeavenRounded\"",
+                                  "font_size_expression": "12",
+                                  "align_expression": "\"right\"",
+                                  "bold_expression": "true"
+                                }
+                              }
+                            },
+                            {
+                              "item": {
+                                "should_render_expression": "true",
+                                "border": {
+                                  "width_expression": "1",
+                                  "style_expression": "\"solid\"",
+                                  "side_expression": "\"bottom\"",
+                                  "color_expression": "\"#E6E7E8\""
+                                },
+                                "margin": {
+                                  "vertical_expression": "3"
+                                },
+                                "text_element": {
+                                  "text_expression": "CommaWithDecimal(Data.shippingFee, 2)",
+                                  "align_expression": "\"right\"",
+                                  "font_expression": "\"DbHeavenRounded\"",
+                                  "font_size_expression": "12"
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "horizontal_layout": {
+                          "column_items": [
+                            {
+                              "item": {
+                                "should_render_expression": "true",
+                                "margin": {
+                                  "vertical_expression": "3"
+                                },
+                                "text_element": {
+                                  "text_expression": "\"ราคาหลังหักส่วนลด\"",
+                                  "font_expression": "\"DbHeavenRounded\"",
+                                  "font_size_expression": "12",
+                                  "align_expression": "\"right\"",
+                                  "bold_expression": "true"
+                                }
+                              }
+                            },
+                            {
+                              "item": {
+                                "should_render_expression": "true",
+                                "margin": {
+                                  "vertical_expression": "3"
+                                },
+                                "text_element": {
+                                  "text_expression": "CommaWithDecimal(Data.buyerStatement.netPrice + Data.shippingFee, 2) + \" บาท\"",
+                                  "align_expression": "\"right\"",
+                                  "font_expression": "\"DbHeavenRounded\"",
+                                  "font_size_expression": "12"
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "should_render_expression": "true",
+                        "horizontal_layout": {
+                          "column_items": [
+                            {
+                              "item": {
+                                "should_render_expression": "true",
+                                "height_expression": "8",
+                                "background_color_expression": "\"#F0F0F0\"",
+                                "margin": {
+                                  "vertical_expression": "3"
+                                },
+                                "text_element": {
+                                  "text_expression": "\"จำนวนเงินรวมทั้งสิ้น\"",
+                                  "font_expression": "\"DbHeavenRounded\"",
+                                  "font_size_expression": "12",
+                                  "align_expression": "\"right\"",
+                                  "bold_expression": "true"
+                                }
+                              }
+                            },
+                            {
+                              "item": {
+                                "should_render_expression": "true",
+                                "height_expression": "8",
+                                "background_color_expression": "\"#F0F0F0\"",
+                                "margin": {
+                                  "vertical_expression": "3"
+                                },
+                                "text_element": {
+                                  "text_expression": "CommaWithDecimal(Data.buyerStatement.netPrice + Data.shippingFee, 2) + \" บาท\"",
+                                  "underline_expression": "true",
+                                  "align_expression": "\"right\"",
+                                  "font_expression": "\"DbHeavenRounded\"",
+                                  "font_size_expression": "12"
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "footer": {
+    "should_render_expression": "true",
+    "vertical_layout": {
+      "items": [
+        {
+          "should_render_expression": "true",
+          "horizontal_layout": {
+            "column_items": [
+              {
+                "item": {
+                  "should_render_expression": "true",
+                  "text_element": {
+                    "text_expression": "\"เอกสารนี้สร้างโดยระบบการจัดการออเดอร์ Patona สมัครได้ฟรีที่ patona.online\"",
+                    "font_expression": "\"DbHeavenRounded\"",
+                    "font_size_expression": "12",
+                    "align_expression": "\"center\""
+                  }
+                },
+                "height_expression": "5",
+                "width_weight_expression": "6"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "footer_height_expression": "6"
+}

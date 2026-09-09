@@ -1,0 +1,66 @@
+include:
+  - project: 'sellsuki/sre/deployment/pipeline-deployment'
+    ref: 'main'
+    file: 'pipelines/gitlab-ci-pipeline.generic-frontend-npm-th.yml'
+
+variables:
+  # Skip all test
+  E2E_TEST_IMAGE_NAME: 'registry.fountain.sellsuki.com/dockerhub/library/alpine:3.15'
+  E2E_TEST_BEFORE_SCRIPT: 'echo "1 + 1"'
+  E2E_TEST_SCRIPT: 'echo "1 + 1"'
+
+  UNIT_TEST_IMAGE_NAME: 'registry.fountain.sellsuki.com/dockerhub/library/alpine:3.15'
+  UNIT_TEST_BEFORE_SCRIPT: 'echo "1 + 1"'
+  UNIT_TEST_SCRIPT: 'echo "1 + 1"'
+
+  INTEGRATION_TEST_IMAGE_NAME: 'registry.fountain.sellsuki.com/dockerhub/library/alpine:3.15'
+  INTEGRATION_TEST_BEFORE_SCRIPT: 'echo "1 + 1"'
+  INTEGRATION_TEST_SCRIPT: 'echo "1 + 1"'
+
+  CODE_ANALYSE_PROJECT_KEY: 'sellercenter-frontend'
+  CODE_ANALYSE: 'true'
+
+  # AUTOMATE_E2E_TS_PATH_AND_TAG: '-i High-level -i F-Customer-Book tests/e2e'
+
+#### Development ####
+.variables_export_development_frontend:
+  variables:
+    CI_JOB_ENABLE: 'true'
+    DOCKER_IMAGE: 'registry.fountain.sellsuki.com/dockerhub/library/node:20'
+    APP_URL: 'sellercenter.dev.patona.online'
+    APP_ENV: 'development'
+    BUILD_OUTPUT: './dist'
+    STORYBOOK_ENABLE: 'false'
+    STORYBOOK_URL: 'storybook-sellercenter.dev.patona.online'
+    STORYBOOK_OUTPUT: './storybook-static'
+
+#### Stagings ####
+.variables_export_staging_frontend:
+  variables:
+    CI_JOB_ENABLE: 'true'
+    DOCKER_IMAGE: 'registry.fountain.sellsuki.com/dockerhub/library/node:20'
+    APP_URL: 'sellercenter.staging.patona.online'
+    APP_ENV: 'staging'
+    BUILD_OUTPUT: './dist'
+    # TRIGGER_DESTINATION_URL: 'sellsuki/patona/patona-automate-testing'
+    # TRIGGER_DESTINATION_BRANCH: 'main'
+    # CI_TRIGGER_PIPELINE_ENABLE: 'true'
+    STORYBOOK_ENABLE: 'false'
+    STORYBOOK_URL: 'storybook-sellercenter.staging.patona.online'
+    STORYBOOK_OUTPUT: './storybook-static'
+
+#### Production ####
+# deploy to aws akita production (last aws id : 4088 )
+.variables_export_production_frontend:
+  variables:
+    CI_JOB_ENABLE: 'true'
+    DOCKER_IMAGE: 'registry.fountain.sellsuki.com/dockerhub/library/node:20'
+    APP_URL: 'sellercenter.patona.online'
+    APP_ENV: 'production'
+    BUILD_OUTPUT: './dist'
+    # TRIGGER_DESTINATION_URL: 'sellsuki/patona/patona-automate-testing'
+    # TRIGGER_DESTINATION_BRANCH: 'main'
+    # CI_TRIGGER_PIPELINE_ENABLE: 'true'
+    STORYBOOK_ENABLE: 'false'
+    STORYBOOK_URL: 'storybook-sellercenter.patona.online'
+    STORYBOOK_OUTPUT: './storybook-static'

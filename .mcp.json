@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "outline": {
+      "type": "http",
+      "url": "https://mcp-outline.internal.production.sellsuki.com/mcp"
+    },
+    "jira": {
+      "type": "sse",
+      "url": "https://mcp-atlassian.internal.production.sellsuki.com/sse"
+    },
+    "gitlab": {
+      "type": "sse",
+      "url": "https://mcp-gitlab.internal.production.sellsuki.com/sse"
+    }
+  }
+}

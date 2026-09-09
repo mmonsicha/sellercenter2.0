@@ -1,0 +1,32 @@
+body {
+	margin: 0;
+	padding: 0;
+}
+
+a {
+	text-decoration: none;
+	color: #1b8bf5;
+}
+
+ssk-input {
+	--border-color-active: #1b8bf5;
+	--outline-color-active: #bce8ff;
+}
+
+ssk-textarea {
+	--border-color-active: #1b8bf5;
+	--outline-color-active: #bce8ff;
+}
+
+.spinner {
+	animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+	from {
+		transform: rotate(0deg);
+	}
+	to {
+		transform: rotate(360deg);
+	}
+}
