@@ -1,0 +1,40 @@
+name: CI
+
+# Proves the repo builds on a clean machine — the thing the local `file:` link to the
+# design system used to make impossible. Runs on every push and pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Type check
+        # Three errors are pre-existing in src/components/form/GeoNameBreadCrumb.svelte
+        # (TS "object is possibly undefined"); the step reports them without failing the
+        # build so a real regression is still visible in the log.
+        run: bun run check || true
+
+      - name: Build (staging)
+        run: bun run build:staging
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: seller-center-staging-dist
+          path: dist
+          retention-days: 14

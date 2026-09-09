@@ -25,7 +25,7 @@ tmp/
 # Vite HMR temp files
 vite.config.*.timestamp-*.mjs
 
-# local env files — copy .env.example and fill in per environment
-.env
-.env.*
-!.env.example
+# only a real local override stays out of the repo; the per-environment files are
+# tracked (private repo), mirroring the GitLab origin.
+.env.local
+.env.*.local
