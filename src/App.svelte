@@ -158,7 +158,9 @@
 <ssk-theme-provider {theme}>
 	<ssk-i18n-provider store={i18nStore}>
 		<ssk-toast-provider toast={toastStore}>
-			<Router {url}>
+			<!-- basepath follows the build's base so a sub-path review deploy matches routes;
+			     '/' in every normal build, which is Router's own default. -->
+			<Router {url} basepath={import.meta.env.BASE_URL.replace(/\/$/, '') || '/'}>
 				<Layout>
 					{#if !$companyList.loading}
 						<Route path="*" component={NotFound} />

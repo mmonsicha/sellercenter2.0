@@ -56,7 +56,8 @@
 				price: variantPrice,
 				image: variantImage,
 				options: getDefaultVariant(product_info),
-				qty: 1
+				qty: 1,
+				fulfilmentType: product_info.type
 			});
 
 			return toggleAddVariantModal($showAddVariantModal);
@@ -71,7 +72,8 @@
 			product_name: product_info.label,
 			price: product_info.price.min,
 			image: product_info.image,
-			qty: 1
+			qty: 1,
+			fulfilmentType: product_info.type
 		});
 
 		AddCartItem($cartItemInfo);
@@ -109,5 +111,32 @@
 		display: grid;
 		padding: 16px;
 		gap: 0.5rem;
+	}
+
+	/* Matches SaleList.svelte's own 1024px grid shrink (216px -> 160px columns) —
+	   the side-by-side layout never changes, so the product pane itself is
+	   narrower than on desktop at tablet widths, and a 216px-tall image sized
+	   for a 216px-wide column looks stretched once the column is only 160px. */
+	@media (max-width: 1024px) {
+		img {
+			height: 160px;
+		}
+
+		.card-content {
+			padding: 12px;
+			gap: 0.375rem;
+		}
+	}
+
+	/* Matches SaleList's 120px column floor for a phone-narrow pane. */
+	@media (max-width: 480px) {
+		img {
+			height: 120px;
+		}
+
+		.card-content {
+			padding: 8px;
+			gap: 0.25rem;
+		}
 	}
 </style>

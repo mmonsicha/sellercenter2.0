@@ -37,6 +37,7 @@ import type { discountType, TCartItem, TCartListInfo, TCartOptions } from '../ca
 import type { Sort } from './filter';
 import { type Customer } from '$lib/entities/customer/customer';
 import { currentStore } from '$stores/store/current-store';
+import { totalShippingFee } from '$utils/utils-order';
 
 export const mappingTabsTitle = [
 	'patona-sellercenter-myorder-tab-all',
@@ -67,9 +68,9 @@ export const orderList = writable<OrderState>({
 	totalStatus: {}
 });
 
-export const shippingFee = derived(orderData, ($orderData) => {
-	return $orderData.deliveries?.[0]?.shippingFee ?? 0;
-});
+// Sums every delivery's fee, not just deliveries[0] — see totalShippingFee's own
+// comment (utils-order.ts) on why a single-delivery order reads exactly as before.
+export const shippingFee = derived(orderData, ($orderData) => totalShippingFee($orderData));
 
 export const createOrder = async (o: Order, storeId: string): Promise<void> => {
 	const orderId = await storeCreateOrder(o, storeId);
@@ -243,7 +244,19 @@ export const makeOrder = async (
 ) => {
 	const sellerInfo = await setSellerInfo(companyId, storeId, pickupStoreId);
 	const cashierInfo = await makeCashierInfo(storeId);
-	const pricingDetail = setPricingDetail('discount', setPricing(cartInfo.discount.type, discount));
+	// A discount that came from a code records the code itself, so a bill can be told
+	// apart from one the cashier discounted by hand — the schema already carries
+	// description/metadata on a PricingDetail, nothing new is asked of the backend. A
+	// manual discount instead carries whichever preset REASON chip the cashier picked
+	// (ตำหนิสินค้า, ของขวัญสะสมแต้ม, ...), same description slot, one or the other never
+	// both — a code already names itself as the reason.
+	const discountCode = cartInfo.discount.code;
+	const pricingDetail = setPricingDetail(
+		'discount',
+		setPricing(cartInfo.discount.type, discount),
+		discountCode ? `รหัสส่วนลด ${discountCode}` : cartInfo.discount.reason,
+		discountCode
+	);
 
 	const deliveries = get(orderData).deliveries;
 

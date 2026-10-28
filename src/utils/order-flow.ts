@@ -13,6 +13,9 @@ export function resolveOrderFlow(args: ResolveOrderFlowArgs): OrderFlow {
 		if (args.isOnline) {
 			return OrderFlow.POS_ONLINE_SUKIPAY_V1;
 		}
+		// OnSite/DigitalDelivery have no backend flow defined yet — they fall through to
+		// this switch's generic fallback return below. Whoever wires real backend support
+		// for these two fulfilment types needs to add cases here then.
 		switch (args.fullfilmentType) {
 			case FullfilmentType.PickupImmediate:
 				return OrderFlow.POS_OFFLINE_SUKIPAY_PICKUP_INSTANT_V1;

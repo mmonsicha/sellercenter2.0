@@ -45,4 +45,28 @@
 		grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
 		gap: 1em;
 	}
+
+	/* The product pane stays side by side with the cart pane at every width
+	   (Sale.svelte never stacks them) — so on a tablet the left pane itself is
+	   narrower than on desktop, not the whole screen. A 216px floor would only
+	   ever fit one column once the pane itself drops under ~450px, turning
+	   browsing into a long single-file list well before the device is actually
+	   phone-sized. Shrinking the floor keeps 2-3 visibly-clear columns in the
+	   pane instead. */
+	@media (max-width: 1024px) {
+		.card-content {
+			grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+			gap: 0.75em;
+		}
+	}
+
+	/* Phone-width window (or a phone-narrow split POS view): shrink further so
+	   two columns still fit inside the left pane's own, now even narrower, share
+	   of the screen. */
+	@media (max-width: 480px) {
+		.card-content {
+			grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+			gap: 0.5em;
+		}
+	}
 </style>

@@ -506,6 +506,39 @@
 		   than a rule. */
 		min-height: 0;
 		overflow: hidden;
+		/* README-tracked bug: with no floor this panel shrinks to ~115px at 1024px;
+		   multi-destination badges/rows are the first feature that can't survive that. */
+		min-width: 320px;
+	}
+
+	/* Tablet/mobile: left (products) and right (cart) stay SIDE BY SIDE at every
+	   width — the cashier wants the same two-pane shape on a tablet till, not a
+	   stacked single column. What shrinks instead is the content: padding tightens
+	   and the cart's own min-width floor comes down from 320px (which alone would
+	   force horizontal overflow on anything narrower than ~left-pane + 320px) to
+	   just enough to keep its rows legible. The product grid's own floor shrinks to
+	   match in SaleList.svelte/ProductItem.svelte, so the left pane still shows
+	   multiple columns of clearly-readable cards instead of one oversized column. */
+	@media (max-width: 1024px) {
+		.left-section,
+		.right-section {
+			padding: 0.75rem;
+		}
+
+		.right-section {
+			min-width: 220px;
+		}
+	}
+
+	@media (max-width: 480px) {
+		.left-section,
+		.right-section {
+			padding: 0.5rem;
+		}
+
+		.right-section {
+			min-width: 170px;
+		}
 	}
 
 	ssk-input {

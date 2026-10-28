@@ -192,10 +192,25 @@ export const orderChannelI18nKey = (channel?: string): string => {
 const fullfilmentTypeI18nKeys: Record<FullfilmentType, string> = {
 	[FullfilmentType.PickupImmediate]: 'order.delivery.pickup_immediate',
 	[FullfilmentType.PickupLater]: 'order.delivery.pickup_later',
-	[FullfilmentType.ShopDelivery]: 'order.delivery.shop_delivery'
+	[FullfilmentType.ShopDelivery]: 'order.delivery.shop_delivery',
+	// No backend i18n content registered for these two yet — Cart.svelte falls back to
+	// plain Thai text (fullfilmentMeta[...].label) wherever this key comes back missing.
+	[FullfilmentType.OnSite]: 'order.delivery.on_site',
+	[FullfilmentType.DigitalDelivery]: 'order.delivery.digital_delivery'
 };
 
+// OnSite/DigitalDelivery deliberately return null here even though they have entries
+// above (needed to satisfy the Record<FullfilmentType, string> type) — no backend i18n
+// content is actually registered for them yet, so returning the key would just render
+// ssk-i18n-translate blank. Returning null drives every call site to its plain-Thai
+// fallback (fullfilmentMeta[...].label) instead. Revisit once real content lands.
+const NO_BACKEND_CONTENT_YET = new Set<FullfilmentType>([
+	FullfilmentType.OnSite,
+	FullfilmentType.DigitalDelivery
+]);
+
 export const orderDeliveryI18nKey = (dType?: string): string | null => {
+	if (NO_BACKEND_CONTENT_YET.has(dType as FullfilmentType)) return null;
 	return fullfilmentTypeI18nKeys[dType as FullfilmentType] ?? null;
 };
 

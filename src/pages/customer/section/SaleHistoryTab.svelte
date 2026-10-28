@@ -11,7 +11,12 @@
 	import { storeListOrder } from '../../../service/management-rest';
 	import PaymentChannel from '$components/PaymentChannel.svelte';
 	import { currentLanguage } from '$stores/i18n';
-	import { getBadgeOrderStatus, getDeliveryMethod, orderDisplayStatus } from '$utils/utils-order';
+	import {
+		getBadgeOrderStatus,
+		deliveryMethodLabel,
+		orderDisplayStatus,
+		totalShippingFee
+	} from '$utils/utils-order';
 	import { orderStatusI18nKey, orderDeliveryI18nKey } from '$utils/i18n-keys';
 	import type { I18nStore } from '@sellsuki-org/sellsuki-components';
 
@@ -250,7 +255,7 @@
 									color="stroke"
 									data-testid={`orders.table-cell.sales-chanel.row.${idx}`}
 								>
-									{getDeliveryMethod(order)?.label ?? '-'}
+									{deliveryMethodLabel(order)}
 								</ssk-text>
 							{/if}
 						</div>
@@ -259,9 +264,7 @@
 						<div class="total-container">
 							<ssk-text color="stroke">฿</ssk-text>
 							<ssk-text size="md" color="gray.800">
-								{formatPrice(
-									(order.buyerStatement.netPrice ?? 0) + (order.deliveries?.[0]?.shippingFee ?? 0)
-								)}
+								{formatPrice((order.buyerStatement.netPrice ?? 0) + totalShippingFee(order))}
 							</ssk-text>
 						</div>
 					</ssk-table-cell>

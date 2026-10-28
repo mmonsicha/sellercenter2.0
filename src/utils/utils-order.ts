@@ -195,6 +195,14 @@ export const mapTaskStatus = (task: Task): string => {
 	return task.status ?? '';
 };
 
+// Sums every delivery's fee, instead of reading only deliveries[0] — the backend has no
+// per-group Delivery yet (see delivery-group.ts's own comment on this), but
+// MULTI-DESTINATION-REWORK.md §3 asks every read path to tolerate `deliveries[]` growing
+// past 1 BEFORE that lands, so a row total does not silently drop real fees the moment
+// it does. With 0 or 1 delivery this is byte-identical to the old `deliveries?.[0]`.
+export const totalShippingFee = (order: Order): number =>
+	order.deliveries?.reduce((sum, d) => sum + (d.shippingFee ?? 0), 0) ?? 0;
+
 export function getDeliveryMethod(order: Order) {
 	const deliveryType = order.deliveries?.[0]?.type;
 	let deliveryMethod = order.deliveries?.[0]?.method;
@@ -220,6 +228,18 @@ export function getDeliveryMethod(order: Order) {
 
 	return found;
 }
+
+// What an order-list row should PRINT for its delivery column. Deliberately separate
+// from getDeliveryMethod: that one answers "which courier option is this order set to",
+// and its result is fed straight into DrawerChannel as the selected option — so it must
+// keep returning a real option a cashier could have picked, never a synthetic one. An
+// order with several parcels has no single courier to name, so only the label changes.
+export const deliveryMethodLabel = (order: Order): string => {
+	const count = order.deliveries?.length ?? 0;
+	if (count > 1) return `${count} พัสดุ`;
+
+	return getDeliveryMethod(order)?.label ?? '-';
+};
 
 export const marketplaceValues = ['shopee', 'lazada', 'tiktok', 'lineShopping'];
 

@@ -1,16 +1,26 @@
 import { describe, it, expect } from 'vitest';
 import {
 	getBadgeOrderStatus,
+	deliveryMethodLabel,
+	getDeliveryMethod,
 	getOrderRowAction,
 	mapOrderPayment,
 	mapOrderStateForDeliveryCompleteByFlow,
 	mapOrderStateForPaymentCompleteByFlow,
 	orderDisplayStatus,
 	OrderRowActionKind,
-	shouldUseSukipayOnline
+	shouldUseSukipayOnline,
+	totalShippingFee
 } from './utils-order';
 import { orderStatusI18nKey } from './i18n-keys';
-import { OrderFlow, PaymentType, Status, type Order, type Task } from '$lib/entities/order/order';
+import {
+	OrderFlow,
+	PaymentType,
+	ShippingType,
+	Status,
+	type Order,
+	type Task
+} from '$lib/entities/order/order';
 import { PaymentMode } from '$lib/entities/configuration/configuration';
 
 // Build a payments task with raw (snake_case) payment entries, mirroring the
@@ -339,5 +349,59 @@ describe('shouldUseSukipayOnline', () => {
 
 	it('false when company is not in SukiPay mode', () => {
 		expect(shouldUseSukipayOnline(undefined, PaymentType.BankTransfer)).toBe(false);
+	});
+});
+
+// MULTI-DESTINATION-REWORK.md §3: read paths must sum every delivery's fee instead of
+// only deliveries[0], so a row total does not silently drop real fees once the backend
+// starts sending more than one delivery.
+describe('totalShippingFee', () => {
+	it('is 0 when the order has no deliveries at all', () => {
+		expect(totalShippingFee({ deliveries: [] } as unknown as Order)).toBe(0);
+		expect(totalShippingFee({} as unknown as Order)).toBe(0);
+	});
+
+	it('reads the single delivery unchanged — byte-identical to the old deliveries[0] read', () => {
+		expect(totalShippingFee({ deliveries: [{ shippingFee: 40 }] } as unknown as Order)).toBe(40);
+	});
+
+	it('sums every delivery across a 3-delivery order', () => {
+		const order = {
+			deliveries: [{ shippingFee: 40 }, { shippingFee: 25 }, { shippingFee: 0 }]
+		} as unknown as Order;
+		expect(totalShippingFee(order)).toBe(65);
+	});
+
+	it('treats a missing shippingFee on any one delivery as 0, not NaN', () => {
+		const order = {
+			deliveries: [{ shippingFee: 40 }, {}, { shippingFee: 10 }]
+		} as unknown as Order;
+		expect(totalShippingFee(order)).toBe(50);
+	});
+});
+
+describe('deliveryMethodLabel — more than one delivery', () => {
+	it('names the count instead of describing only deliveries[0]', () => {
+		const order = {
+			deliveries: [{ type: ShippingType.Standard, method: 'flash' }, { type: ShippingType.SameDay }, {}]
+		} as unknown as Order;
+		expect(deliveryMethodLabel(order)).toBe('3 พัสดุ');
+	});
+
+	it('still names the courier when the order has a single delivery', () => {
+		const order = {
+			deliveries: [{ type: ShippingType.Standard, method: 'flash' }]
+		} as unknown as Order;
+		expect(deliveryMethodLabel(order)).toBe('Flash Express');
+	});
+
+	// getDeliveryMethod feeds DrawerChannel's selected option, so it must keep answering
+	// with a real courier a cashier could have picked — never a synthetic "multiple",
+	// which would be written back into the order on save.
+	it('leaves getDeliveryMethod answering with the real courier option', () => {
+		const order = {
+			deliveries: [{ type: ShippingType.Standard, method: 'flash' }, { type: ShippingType.SameDay }]
+		} as unknown as Order;
+		expect(getDeliveryMethod(order)?.value).toBe('flash');
 	});
 });

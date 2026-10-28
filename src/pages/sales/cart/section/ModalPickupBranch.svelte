@@ -13,6 +13,8 @@
 	export let sellingStoreId: string = '';
 	export let onSelect: (branch: Store) => void;
 	export let close: () => void;
+	export let modalId: string = 'pickup-branch';
+	export let testIdPrefix: string = 'sales.pickup';
 
 	// Edits a draft, like the discount modal: "ยกเลิก" really cancels.
 	let draftId: string = '';
@@ -33,7 +35,7 @@
 </script>
 
 <Modal
-	id="pickup-branch"
+	id={modalId}
 	ShowModal={show}
 	title="เลือกสาขาที่มารับสินค้า"
 	hPosition="left"
@@ -59,7 +61,7 @@
 					selected={branch.id === draftId}
 					tabbable={branch.id === draftId || (draftIndex < 0 && index === 0)}
 					onSelect={() => (draftId = branch.id ?? draftId)}
-					testId={`sales.pickup.branch.${branch.id ?? index}`}
+					testId={`${testIdPrefix}.branch.${branch.id ?? index}`}
 				/>
 			{/each}
 		</PickList>
@@ -75,7 +77,7 @@
 		themeColor="gray"
 		width="full"
 		on:click={cancel}
-		data-testid="sales.pickup.cancel"
+		data-testid={`${testIdPrefix}.cancel`}
 	>
 		ยกเลิก
 	</ssk-button>
@@ -84,7 +86,7 @@
 		width="full"
 		disabled={!draftId}
 		on:click={apply}
-		data-testid="sales.pickup.apply"
+		data-testid={`${testIdPrefix}.apply`}
 	>
 		เลือกสาขานี้
 	</ssk-button>

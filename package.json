@@ -44,7 +44,7 @@
     "yup": "^1.4.0"
   },
   "dependencies": {
-    "@sellsuki-org/sellsuki-components": "0.27.1",
+    "@sellsuki-org/sellsuki-components": "file:../../sellsuki-components-upgrade",
     "dexie": "^4.0.1-beta.7",
     "lodash": "^4.17.21",
     "openapi-typescript": "^5.4.1",

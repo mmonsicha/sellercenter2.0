@@ -116,7 +116,8 @@
 	.quantity-number-input.horizontal {
 		flex-direction: row;
 		align-items: center;
-		gap: 0.25rem;
+		gap: 0.125rem;
+		height: 44px;
 		width: auto;
 	}
 
@@ -126,8 +127,9 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: 1.75rem;
-		height: 1.75rem;
+		flex: 0 0 44px;
+		width: 44px;
+		height: 44px;
 		border-radius: 4px;
 	}
 
@@ -137,7 +139,9 @@
 	}
 
 	.horizontal .quantity-num {
-		width: 2.25rem;
+		box-sizing: border-box;
+		width: 2.5rem;
+		height: 44px;
 		padding: 0.25rem;
 		font-size: 14px;
 	}

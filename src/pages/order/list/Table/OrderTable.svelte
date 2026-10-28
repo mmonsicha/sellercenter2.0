@@ -10,11 +10,12 @@
 	import { currentLanguage } from '$stores/i18n';
 	import {
 		getBadgeOrderStatus,
-		getDeliveryMethod,
+		deliveryMethodLabel,
 		getOrderRowAction,
 		orderDisplayStatus,
 		OrderRowActionKind,
-		slipStatusTheme
+		slipStatusTheme,
+		totalShippingFee
 	} from '$utils/utils-order';
 	import type { I18nStore } from '@sellsuki-org/sellsuki-components';
 	import { getContext } from 'svelte';
@@ -253,7 +254,7 @@
 							color="stroke"
 							data-testid={`orders.table-cell.sales-chanel.row.${idx}`}
 						>
-							{getDeliveryMethod(order)?.label ?? '-'}
+							{deliveryMethodLabel(order)}
 						</ssk-text>
 					{/if}
 				</div>
@@ -268,7 +269,7 @@
 						color="gray.800"
 						data-testid={`orders.table-cell.total-price.row.${idx}`}
 						>{formatPrice(
-							(order.buyerStatement.netPrice ?? 0) + (order.deliveries?.[0]?.shippingFee ?? 0)
+							(order.buyerStatement.netPrice ?? 0) + totalShippingFee(order)
 						)}</ssk-text
 					>
 				</div>

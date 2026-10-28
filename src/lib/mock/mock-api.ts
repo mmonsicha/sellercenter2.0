@@ -436,28 +436,134 @@ const postalCodeResponse = (code: string) => ({
 });
 
 /* ----------------------------------------------------------- pis products */
-const mkProduct = (id: string, code: string, name: string, price: number) => ({
+// `type` is PIS's fulfilment profile — physical | digital | service (pis-gen.ts,
+// model.ProductRequest). It used to read 'simple' here, which is not one of them, so
+// every mock product fell back to physical and an order could never split: the
+// multi-parcel cart (badges, การจัดส่ง row, the parcel drawer) was unreachable in the
+// offline shell no matter what you put in the basket. The catalogue below carries a
+// digital line so that path is reviewable without a real backend.
+const mkProduct = (
+	id: string,
+	code: string,
+	name: string,
+	price: number,
+	type: 'physical' | 'digital' | 'service' = 'physical'
+) => ({
 	id,
 	code,
 	name,
-	type: 'simple',
+	type,
 	price,
 	images: [],
 	variant: [],
 	customer_inputs: []
 });
 
-const PIS_PRODUCTS_RESPONSE = {
-	results: [
-		mkProduct('p1', 'SKU-p1', 'เสื้อยืดคอตตอน', 390),
-		mkProduct('p2', 'SKU-p2', 'กางเกงยีนส์', 510),
-		mkProduct('p3', 'SKU-p3', 'หมวกแก๊ป', 250),
-		mkProduct('p4', 'SKU-p4', 'ถุงเท้า', 50),
-		mkProduct('p5', 'SKU-p5', 'รองเท้าผ้าใบ', 1200),
-		mkProduct('p6', 'SKU-p6', 'กระเป๋าผ้า', 320)
-	],
-	total: 6
+const PIS_PRODUCTS = [
+	mkProduct('p1', 'SKU-p1', 'เสื้อยืดคอตตอน', 390),
+	mkProduct('p2', 'SKU-p2', 'กางเกงยีนส์', 510),
+	mkProduct('p3', 'SKU-p3', 'หมวกแก๊ป', 250),
+	mkProduct('p4', 'SKU-p4', 'ถุงเท้า', 50),
+	mkProduct('p5', 'SKU-p5', 'รองเท้าผ้าใบ', 1200),
+	mkProduct('p6', 'SKU-p6', 'กระเป๋าผ้า', 320),
+	// Digital lines — the ones that force a parcel split and need an email destination.
+	// Several of them on purpose: two digital items in one cart must still collapse into
+	// a SINGLE ดิจิทัล parcel, which is the rule most likely to regress unnoticed.
+	mkProduct('p7', 'SKU-p7', 'E-voucher ฿500', 500, 'digital'),
+	mkProduct('p8', 'SKU-p8', 'บัตรกำนัลอิเล็กทรอนิกส์ ฿1,000', 1000, 'digital'),
+	mkProduct('p9', 'SKU-p9', 'โค้ดเติมเกม 500 เพชร', 199, 'digital'),
+	mkProduct('p10', 'SKU-p10', 'คอร์สออนไลน์ ถ่ายภาพเบื้องต้น', 1490, 'digital'),
+	mkProduct('p11', 'SKU-p11', 'e-Book สูตรอาหารไทย', 129, 'digital'),
+	mkProduct('p12', 'SKU-p12', 'ตั๋วเข้างาน e-Ticket', 350, 'digital'),
+	// Service lines — performed, never shipped, so they join no parcel at all.
+	mkProduct('p13', 'SKU-p13', 'บริการห่อของขวัญ', 80, 'service'),
+	mkProduct('p14', 'SKU-p14', 'บริการปักชื่อบนเสื้อ', 150, 'service')
+];
+
+// The sales page has ทั้งหมด / สินค้า / บริการ / ดิจิทัล tabs that pass `type` (and a
+// search box that passes `keyword`) straight to PIS. The mock used to answer every one
+// of them with the whole catalogue, so the tabs looked broken and a digital product was
+// hard to find at all — filter the way the real endpoint does.
+const pisProducts = (params?: { type?: string; keyword?: string }) => {
+	const type = params?.type ?? '';
+	const keyword = (params?.keyword ?? '').trim().toLowerCase();
+
+	const results = PIS_PRODUCTS.filter(
+		(p) =>
+			(type === '' || p.type === type) &&
+			(keyword === '' ||
+				p.name.toLowerCase().includes(keyword) ||
+				p.code.toLowerCase().includes(keyword))
+	);
+
+	return { results, total: results.length };
 };
+
+/* ------------------------------------------------------- payment channels */
+// GET /payment answers the store's payment channels, and the cart gates checkout on
+// them: resolveAvailablePaymentMethods (payment-transaction.ts) keeps only the methods
+// whose channel type is ENABLED here, and offers NoPaymentChannelModal when none
+// survive. The empty default this used to fall through to left every offline sale
+// dead-ended at "ร้านนี้ยังไม่ได้เปิดช่องทางชำระเงิน" — so the whole flow after เก็บเงิน
+// was unreachable offline.
+//
+// Raw shape on purpose (snake_case, numeric ids, `payment` wrapper): it goes through
+// toPaymentChannel in management-adapter, and mocking the mapped shape would let an
+// adapter bug pass unnoticed here. Only 'cash' and 'bankTransfer' are types the app
+// maps (payment.ts) — anything else is dropped, so nothing else is invented.
+const mkPaymentChannel = (
+	id: number,
+	paymentId: number,
+	name: string,
+	description: string,
+	type: 'cash' | 'bankTransfer',
+	status: boolean,
+	metadata: Record<string, string> | null = null
+) => ({
+	id,
+	status,
+	payment: { id: paymentId, name, description, type, owner: COMPANY_ID, metadata }
+});
+
+const PAYMENT_CHANNELS = [
+	mkPaymentChannel(1, 101, 'เงินสด', 'รับชำระเป็นเงินสดที่เคาน์เตอร์', 'cash', true),
+	mkPaymentChannel(
+		2,
+		102,
+		'ธนาคารกสิกรไทย',
+		'โอนเข้าบัญชีร้าน แล้วแนบสลิป',
+		'bankTransfer',
+		true,
+		{
+			provider_bank_code: 'kbank',
+			provider_bank_logo: '/images/default-image.png',
+			account_number: '123-4-56789-0',
+			name: 'บริษัท พาโตน่า จำกัด'
+		}
+	),
+	mkPaymentChannel(
+		3,
+		103,
+		'ธนาคารไทยพาณิชย์',
+		'โอนเข้าบัญชีร้าน แล้วแนบสลิป',
+		'bankTransfer',
+		true,
+		{
+			provider_bank_code: 'scb',
+			provider_bank_logo: '/images/default-image.png',
+			account_number: '987-6-54321-0',
+			name: 'บริษัท พาโตน่า จำกัด'
+		}
+	),
+	// Left OFF so the settings page has something to switch on, and so the enabled-only
+	// filter in resolveAvailablePaymentMethods is exercised rather than assumed.
+	mkPaymentChannel(4, 104, 'ธนาคารกรุงเทพ', 'ปิดใช้งานอยู่', 'bankTransfer', false, {
+		provider_bank_code: 'bbl',
+		provider_bank_logo: '/images/default-image.png',
+		account_number: '555-1-22222-0',
+		name: 'บริษัท พาโตน่า จำกัด'
+	})
+];
 
 /* -------------------------------------------------------------- the adapter */
 function parseBody(data: unknown): unknown {
@@ -491,6 +597,17 @@ export function getMockAdapter(): AxiosAdapter {
 		// Customer writes (address add / edit) — keep them in the in-memory fixture so the
 		// flow can be reviewed offline: the cart re-reads the customer right after saving.
 		if (method === 'put' || method === 'patch') {
+			// Settings → ช่องทางชำระเงิน toggles a channel with PUT /payment/{id}. Keep the
+			// switch in memory so the page reflects what was just switched, and so the cart's
+			// available methods change with it for the rest of the session.
+			const onePayment = path.match(/\/payment\/(\d+)$/);
+			if (onePayment) {
+				const body = parseBody(config.data) as { status?: boolean } | undefined;
+				const channel = PAYMENT_CHANNELS.find((c) => String(c.id) === onePayment[1]);
+				if (channel && typeof body?.status === 'boolean') channel.status = body.status;
+				return ok(config, channel ?? {});
+			}
+
 			const one = path.match(/\/customers\/(\d+)(?:\/access)?$/);
 			if (one) {
 				const body = parseBody(config.data) as Record<string, unknown> | undefined;
@@ -563,7 +680,11 @@ export function getMockAdapter(): AxiosAdapter {
 			}
 			if (path.includes('/customers')) return ok(config, CUSTOMERS_RESPONSE);
 			if (path === 'products' || path.endsWith('/products'))
-				return ok(config, PIS_PRODUCTS_RESPONSE);
+				return ok(config, pisProducts(config.params as { type?: string; keyword?: string }));
+			// Store payment channels. GET-only: the order's own /payment endpoint is a PUT,
+			// so this cannot swallow it.
+			if (path === 'payment' || path.endsWith('/payment'))
+				return ok(config, { data: PAYMENT_CHANNELS, total: PAYMENT_CHANNELS.length });
 			// single-config GET (not on the boot path, but keep it consistent)
 			const singleCfg = path.match(/\/configuration\/([^/]+)$/);
 			if (singleCfg) {

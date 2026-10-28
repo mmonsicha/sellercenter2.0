@@ -40,7 +40,11 @@ export enum PaymentType {
 export enum FullfilmentType {
 	PickupImmediate = 'pickupImmediate',
 	PickupLater = 'pickupLater',
-	ShopDelivery = 'shopDelivery'
+	ShopDelivery = 'shopDelivery',
+	// New sale-level fulfilment kinds (ให้บริการที่สถานที่ลูกค้า / จัดส่งเข้าระบบดิจิทัล) —
+	// no backend OrderFlow routing exists for either yet, see order-flow.ts.
+	OnSite = 'onSite',
+	DigitalDelivery = 'digitalDelivery'
 }
 
 export enum Status {

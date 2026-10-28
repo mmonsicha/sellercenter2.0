@@ -40,13 +40,18 @@ The `deploy/static-host/` folder holds the SPA rewrite rules for dropping the re
 during the POS review are **not** in that release and are still open on the DS branch
 `feat/ds1-font-token-logo`:
 
-- `ssk-drawer-header` renders its title as `<ssk-heading level="1">`, which never applies
-  its own font-size, so drawer titles fall back to the UA `h1` 2em (32px next to 14–16px
-  body text). The fix gives the title `--ssk-drawer-title-*` hooks defaulting to 20px.
+- `ssk-drawer-header` renders its title as `<ssk-heading level="1">`, and `ssk-heading`
+  renders `<h1><slot/></h1>`. The title text is therefore _slotted_, so it inherits from
+  the light-DOM host (16px) and never sees the `h1`'s own font-size — measured on 0.27.1:
+  host `ssk-heading` 16px/400, inner `h1` 32px with a 24px line-height, painted title
+  **16px**, i.e. a heading that renders at body size while the `h1` box is sized for 32px.
+  The fix has the header own its typography (`<h2 class="title">` plus
+  `--ssk-drawer-title-*` hooks, 20px/600) instead of inheriting it.
 - `ssk-dynamic-table` owns no typography, so header cells inherit whatever font-size an
   ancestor sets. The fix adds `size` / `headerSize` props publishing `--table-font-*`.
 
-Until those land and a 0.27.2 is published, drawer titles here render at 32px.
+Until those land and a 0.27.2 is published, drawer titles here are the same size as the
+body text around them.
 
 ## What the POS screen does today
 
