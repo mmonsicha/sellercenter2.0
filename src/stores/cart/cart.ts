@@ -215,6 +215,35 @@ export function SetCartItemReceiveMode(id: string, mode: ReceiveMode) {
 	setCartLocalAndCartStore(localCart);
 }
 
+// Basic mode's per-line override (see TCartItem.lineFulfilment) — same persistence
+// pattern as SetCartItemReceiveMode above. `undefined` clears back to "follow the sale
+// default", it does not delete the line.
+export function SetCartItemFulfilment(id: string, kind: string | undefined) {
+	const localCart = GetExistingCart();
+
+	localCart.map((c) => {
+		if (c.lineId === id) {
+			c.lineFulfilment = kind;
+		}
+
+		return c;
+	});
+
+	setCartLocalAndCartStore(localCart);
+}
+
+// Clears every line's per-line fulfilment override AND legacy receiveMode — used when the
+// sale-level fulfilment/channel changes in a way that invalidates whatever the cashier had
+// picked per line before (e.g. switching the whole sale between POS/online/marketplace),
+// so a stale line-level pick never silently outlives the context it was made in.
+export function ResetPhysicalLineFulfilment() {
+	const localCart = GetExistingCart();
+
+	const updated = localCart.map((c) => ({ ...c, lineFulfilment: undefined, receiveMode: undefined }));
+
+	setCartLocalAndCartStore(updated);
+}
+
 export function RemoveCartItem(id: string) {
 	const localCart = GetExistingCart();
 	const newCartList = localCart.filter((c) => c.lineId != id);

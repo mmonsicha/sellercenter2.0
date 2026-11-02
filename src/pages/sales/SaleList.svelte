@@ -9,7 +9,10 @@
 
 	const i18nStore = getContext<I18nStore>('i18n');
 	export let loadMore: () => void;
+	export let columns: 3 | 4 | 5 = 3;
 	let productNotFound = '';
+
+	$: compact = columns >= 5;
 
 	const loadKeywords = async () => {
 		productNotFound = await i18nStore.get(
@@ -25,9 +28,9 @@
 </script>
 
 {#if $salesProductList.data && $salesProductList.data.length > 0}
-	<div class="card-content">
+	<div class="card-content" style="--cols: {columns}">
 		{#each $salesProductList.data as product}
-			<Item product_info={product} />
+			<Item product_info={product} {compact} />
 		{/each}
 	</div>
 	<InfiniteScroll
@@ -42,7 +45,7 @@
 <style lang="css">
 	.card-content {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
+		grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr));
 		gap: 1em;
 	}
 
@@ -65,7 +68,9 @@
 	   of the screen. */
 	@media (max-width: 480px) {
 		.card-content {
-			grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+			/* Cap at 2 columns regardless of the chosen density so cards never
+			   shrink below a legible size on phone-width panes. */
+			grid-template-columns: repeat(min(var(--cols, 3), 2), minmax(0, 1fr));
 			gap: 0.5em;
 		}
 	}

@@ -132,6 +132,30 @@
 	let tooltipItems: string[] = [];
 	let typePayment: string = '';
 
+	// Collapsible so the item list gets the height back on short screens (e.g. 1366x768
+	// laptops) — persisted per-device so a cashier's pick sticks across sales, defaulting
+	// to expanded only on screens tall enough to show it without pushing the pay button off.
+	const SUMMARY_EXPANDED_KEY = 'pos.cart.summaryExpanded';
+	function readStoredSummaryExpanded(): boolean | undefined {
+		try {
+			const raw = localStorage.getItem(SUMMARY_EXPANDED_KEY);
+			return raw === null ? undefined : raw === 'true';
+		} catch {
+			return undefined;
+		}
+	}
+	let summaryExpanded =
+		readStoredSummaryExpanded() ?? (typeof window !== 'undefined' ? window.innerHeight >= 900 : true);
+
+	function toggleSummaryExpanded() {
+		summaryExpanded = !summaryExpanded;
+		try {
+			localStorage.setItem(SUMMARY_EXPANDED_KEY, String(summaryExpanded));
+		} catch {
+			// best-effort — collapsing/expanding still works for this session
+		}
+	}
+
 	cartListInfo.subscribe((c) => {
 		summary = c.summaryPrice;
 
@@ -431,6 +455,10 @@
 		// read the whole sale as "ยังไม่ครบ" even when the one real parcel was fully set.
 		return `ค่าจัดส่ง (${shippingCount} พัสดุ)`;
 	})();
+
+	// Same figure the (now optionally hidden) breakdown's own grand-total row shows —
+	// the collapsed bar needs it too.
+	$: grandTotal = summary + ($showDeliveryDetail ? $deliverySummary.totalFee : $shippingFee);
 
 	function toggleClearCartModal() {
 		showClearCartModal = !showClearCartModal;
@@ -1119,6 +1147,7 @@
 </Modal>
 
 <div class="summary">
+	{#if summaryExpanded}
 	<!-- Two buttons instead of three standing fields: both extras live in modals now,
 	     and each button states whether it is holding anything (filled = has content,
 	     matching the reference). -->
@@ -1217,6 +1246,15 @@
 	<!-- Every line of money the cashier reads before taking payment, always at full
 	     height. The item list above is what gives up space, never this. -->
 	<div class="detail">
+		<button
+			type="button"
+			class="summary-collapse-toggle"
+			on:click={toggleSummaryExpanded}
+			aria-label="ย่อสรุปยอด"
+			data-testid="sales.cart.summary.toggle"
+		>
+			<ssk-icon name="outline-chevron-down" size="xs" themeColor="stroke"></ssk-icon>
+		</button>
 		<div class="summary-row summary-subtotal">
 			<ssk-text fontSize="24px" color="gray.700" fontWeight="medium">
 				<ssk-i18n-translate
@@ -1294,6 +1332,35 @@
 			</ssk-text>
 		</div>
 	</div>
+	{:else}
+	<!-- Collapsed: one compact row carries the number that matters most (grand total)
+	     plus a hint when something is hidden that the cashier would otherwise miss
+	     (an unset shipping fee, or an applied discount) — everything else is a tap
+	     away via the chevron. -->
+	<button
+		type="button"
+		class="summary-collapsed"
+		on:click={toggleSummaryExpanded}
+		data-testid="sales.cart.summary.toggle"
+	>
+		<span class="summary-collapsed-label">
+			<ssk-i18n-translate
+				key="patona-sellercenter-sales-summary-grandtotal"
+				lang={$currentLanguage.code}
+				fallbackLang="default"
+			/>
+			{#if $showDeliveryDetail && $deliverySummary.feeUnknown}
+				<span class="fee-incomplete"> · ค่าส่งยังไม่ครบ</span>
+			{:else if hasDiscount}
+				<span class="summary-collapsed-discount"> · ส่วนลด -{formatPriceWithBath(discount)}</span>
+			{/if}
+		</span>
+		<span class="summary-collapsed-right">
+			<span class="summary-collapsed-total">{formatPriceWithBath(grandTotal)}</span>
+			<ssk-icon name="outline-chevron-up" size="xs" themeColor="stroke"></ssk-icon>
+		</span>
+	</button>
+	{/if}
 	<div class="footer">
 		<!-- The two terminal actions keep the DS default size: they are the last thing a
 		     cashier should have to aim at, and they sit side by side so they match. -->
@@ -1866,6 +1933,7 @@
 		   .cart-item in Cart.svelte); everything below it now keeps its full height. */
 		flex: 0 0 auto;
 		overflow: visible;
+		position: relative;
 		background-color: var(--ssk-colors-gray-50);
 		border: 1px solid var(--ssk-colors-gray-100);
 		border-radius: 8px;
@@ -1875,6 +1943,90 @@
 		flex-direction: column;
 		gap: 0.5rem;
 		margin-bottom: 0.25rem;
+	}
+
+	/* Expanded-state collapse control, pinned to the box's own top-right corner so it
+	   doesn't take a row of its own. */
+	.summary-collapse-toggle {
+		position: absolute;
+		top: 0.5rem;
+		right: 0.5rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.5rem;
+		height: 1.5rem;
+		padding: 0;
+		background: none;
+		border: 0;
+		border-radius: 999px;
+		cursor: pointer;
+		color: var(--ssk-colors-gray-500);
+	}
+
+	.summary-collapse-toggle:hover {
+		background: rgba(0, 0, 0, 0.06);
+	}
+
+	.summary-collapse-toggle:focus-visible {
+		outline: 2px solid var(--ssk-colors-primary-500);
+		outline-offset: 1px;
+	}
+
+	/* Collapsed state: the whole breakdown box becomes one tappable row — grand total
+	   plus a hint for anything the breakdown would otherwise have surfaced. */
+	.summary-collapsed {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		width: 100%;
+		box-sizing: border-box;
+		padding: 0.625rem 0.875rem;
+		background-color: var(--ssk-colors-gray-50);
+		border: 1px solid var(--ssk-colors-gray-100);
+		border-radius: 8px;
+		font-family: inherit;
+		cursor: pointer;
+		flex: 0 0 auto;
+		margin-bottom: 0.25rem;
+	}
+
+	.summary-collapsed:hover {
+		background-color: var(--ssk-colors-gray-100);
+	}
+
+	.summary-collapsed:focus-visible {
+		outline: 2px solid var(--ssk-colors-primary-500);
+		outline-offset: 1px;
+	}
+
+	.summary-collapsed-label {
+		font-size: var(--ssk-font-size-sm);
+		font-weight: 600;
+		color: var(--ssk-colors-gray-700);
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+		min-width: 0;
+	}
+
+	.summary-collapsed-discount {
+		color: var(--ssk-colors-success-600, #16a34a);
+		font-weight: 500;
+	}
+
+	.summary-collapsed-right {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		flex: 0 0 auto;
+	}
+
+	.summary-collapsed-total {
+		font-size: 20px;
+		font-weight: 700;
+		color: var(--ssk-colors-primary-500, var(--ssk-colors-primary));
 	}
 
 	.summary-row {

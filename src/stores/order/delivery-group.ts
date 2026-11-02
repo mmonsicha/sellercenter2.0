@@ -4,6 +4,7 @@ import { orderData, setDelivery } from '$stores/order/order';
 import { FullfilmentType, type Delivery } from '$lib/entities/order/order';
 import { isMultiParcelEnabled } from '$lib/feature-flags';
 import {
+	BASIC_CATEGORY_ORDER,
 	DeliveryGroupKind,
 	ItemFulfilmentType,
 	ReceiveMode,
@@ -11,13 +12,16 @@ import {
 	canReceiveNow,
 	isDestinationReady,
 	isHandoverGroup,
+	isMarketplaceChannel,
 	isServiceItem,
 	itemFulfilmentOf,
 	kindNeedsShippingMethod,
 	kindNeedsTravelFee,
 	newDeliveryGroup,
 	receiveModeOf,
-	type DeliveryGroup
+	resolveLineKind,
+	type DeliveryGroup,
+	type LineFulfilmentCtx
 } from '$lib/entities/order/delivery-group';
 
 export const deliveryGroups = writable<DeliveryGroup[]>([]);
@@ -75,6 +79,15 @@ let lastSyncedBuyerAddress: string | undefined;
 // steers one branch of one function. Reset wherever groups collapse back to "nothing
 // split" so a later, unrelated sale never inherits a stale "stay split" flag.
 let groupOrderActive = false;
+
+/**
+ * Readable mirror of `groupOrderActive` for the UI — whether the cashier's advanced
+ * group-order mode is on (named parcels, per-parcel addresses, drag-and-drop) or the
+ * sale is still in basic mode (split only by fulfilment category, one shared destination
+ * per category — see `syncBasicGroups`). Kept in lockstep with `groupOrderActive`
+ * everywhere that module flag is assigned.
+ */
+export const groupOrderMode = writable<boolean>(false);
 
 /**
  * count > 1 — a real split. Still exported for copy that reads the count itself (the
@@ -138,6 +151,147 @@ export const deliverySummary = derived(deliveryGroups, ($g) => {
 });
 
 /**
+ * Basic mode's engine — the default whenever `groupOrderActive` is false. Splits ONLY by
+ * fulfilment category (PickupInStore/PickupLater/Shipping/OnSite/Digital), never by
+ * origin, stock, or a cashier-made parcel — there is exactly one group per category
+ * actually present in the cart, each sharing ONE destination for that whole category
+ * (the sale's own customer address / pickup branch / email+phone), never a per-item or
+ * per-parcel override. See FULFILMENT spec B1–B8.
+ */
+function syncBasicGroups(items: TCartItem[], ctx: Parameters<typeof syncDeliveryGroups>[1]): void {
+	if (items.length === 0) {
+		deliveryGroups.set([]);
+		activeDeliveryGroupId.set(undefined);
+		lastSyncedBuyerAddress = undefined;
+		return;
+	}
+
+	const channel: LineFulfilmentCtx['channel'] = ctx.channel ?? 'pos';
+	const marketplace = ctx.marketplace ?? isMarketplaceChannel(ctx.subChannel);
+	const lineCtx: LineFulfilmentCtx = { channel, marketplace };
+	// The category the sale is collected through by default — also what resolveLineKind
+	// falls back to for a line that has no explicit pick of its own.
+	const saleDefaultKind = physicalKindFor(ctx.fulfilmentType, ctx.isDelivery);
+
+	const previous = get(deliveryGroups);
+	const buckets = new Map<DeliveryGroupKind, string[]>();
+	items.forEach((item) => {
+		if (!item.lineId) return;
+		// The legacy "รับเลยที่เคาน์เตอร์" per-line toggle only ever meant something on a
+		// POS จัดส่งให้ลูกค้า sale (see the old step 1.5's own gate) — carrying it into
+		// resolveLineKind unconditionally would make an unrelated flag on a stale cart
+		// line start acting like a line-level pick it never actually was.
+		const honourReceiveMode = !!ctx.allowPartialReceive && !!ctx.isDelivery;
+		const effectiveItem = honourReceiveMode ? item : { ...item, receiveMode: undefined };
+		const kind = resolveLineKind(effectiveItem, saleDefaultKind, lineCtx);
+		const bucket = buckets.get(kind) ?? [];
+		bucket.push(item.lineId);
+		buckets.set(kind, bucket);
+	});
+
+	const presentKinds = BASIC_CATEGORY_ORDER.filter((kind) => (buckets.get(kind)?.length ?? 0) > 0);
+
+	// The zero-cost path: a sale sold as pickup-now with nothing to split it (no
+	// override, no digital/service/marketplace line) builds no groups at all, exactly
+	// like today. Only collapses when PickupInStore is BOTH the only bucket present AND
+	// the sale's own default — an all-"now" override on an otherwise-shipped sale (every
+	// line flipped at the counter) is a real handover pile, not this zero-cost case, and
+	// must still show as its own group below.
+	if (
+		presentKinds.length === 0 ||
+		(presentKinds.length === 1 &&
+			presentKinds[0] === DeliveryGroupKind.PickupInStore &&
+			saleDefaultKind === DeliveryGroupKind.PickupInStore)
+	) {
+		deliveryGroups.set([]);
+		activeDeliveryGroupId.set(undefined);
+		lastSyncedBuyerAddress = undefined;
+		return;
+	}
+
+	// The one case that stays a plain, unlocked, reason-less default group — a single
+	// Shipping/OnSite/PickupLater bucket is exactly the same "no reason to be split yet"
+	// bucket the advanced engine's own default group is, so showDeliveryDetail/
+	// isHandoverGroup/the footer all keep reading it the same way. PickupInStore and
+	// Digital are deliberately excluded even when alone: a lone override-driven
+	// PickupInStore bucket is still a handover pile (SplitReason.Receive), and Digital is
+	// always a hard split (SplitReason.Product) with its own locked group regardless.
+	const soloKind = presentKinds.length === 1 ? presentKinds[0] : undefined;
+	const isPlainDefault =
+		soloKind === DeliveryGroupKind.Shipping ||
+		soloKind === DeliveryGroupKind.OnSite ||
+		soloKind === DeliveryGroupKind.PickupLater;
+
+	const groups: DeliveryGroup[] = presentKinds.map((kind) => {
+		const existing = previous.find((g) => g.kind === kind);
+		const itemIds = buckets.get(kind) ?? [];
+		const splitReason = isPlainDefault
+			? undefined
+			: kind === DeliveryGroupKind.PickupInStore
+				? SplitReason.Receive
+				: kind === DeliveryGroupKind.Digital
+					? SplitReason.Product
+					: SplitReason.Fulfilment;
+
+		const base: DeliveryGroup = {
+			...(existing ?? newDeliveryGroup()),
+			kind,
+			itemIds,
+			locked: !isPlainDefault,
+			splitReason
+		};
+
+		switch (kind) {
+			case DeliveryGroupKind.Shipping:
+				return marketplace
+					? {
+							...base,
+							courier: ctx.subChannel,
+							method: 'platform',
+							shippingFee: 0,
+							recipientName: ctx.recipientName,
+							recipientAddress: ctx.recipientAddress,
+							recipientAddressId: ctx.recipientAddressId
+						}
+					: {
+							...base,
+							recipientName: ctx.recipientName,
+							recipientAddress: ctx.recipientAddress,
+							recipientAddressId: ctx.recipientAddressId
+						};
+			case DeliveryGroupKind.OnSite:
+				return {
+					...base,
+					recipientName: ctx.recipientName,
+					recipientAddress: ctx.recipientAddress,
+					recipientAddressId: ctx.recipientAddressId
+				};
+			case DeliveryGroupKind.PickupLater:
+				return { ...base, pickupStoreId: ctx.pickupStoreId };
+			case DeliveryGroupKind.Digital:
+				return {
+					...base,
+					shippingFee: 0,
+					recipientEmail: ctx.recipientEmail,
+					recipientPhone: ctx.recipientPhone
+				};
+			case DeliveryGroupKind.PickupInStore:
+			default:
+				return {
+					...base,
+					shippingFee: 0,
+					recipientAddress: undefined,
+					recipientAddressId: undefined
+				};
+		}
+	});
+
+	lastSyncedBuyerAddress = ctx.recipientAddress;
+	activeDeliveryGroupId.set(undefined);
+	deliveryGroups.set(groups);
+}
+
+/**
  * Auto hard-split engine — runs on every cart change. Digital items and service items
  * are each split into their own locked group first (an email and an on-site visit are
  * each necessarily their own destination), then off-majority origins are split into
@@ -158,6 +312,19 @@ export function syncDeliveryGroups(
 		/** POS จัดส่งให้ลูกค้า only — every other sale ignores each line's receiveMode. */
 		allowPartialReceive?: boolean;
 		sellingOriginId?: string;
+		/** Basic mode only (see syncBasicGroups) — which checkout surface is selling this.
+		 *  Defaults to 'pos' when omitted, matching every existing caller. */
+		channel?: LineFulfilmentCtx['channel'];
+		/** Basic mode only — explicit override for isMarketplaceChannel(subChannel). */
+		marketplace?: boolean;
+		/** Basic mode only — the sale's sub-channel (shopee/lazada/tiktok/...), used both to
+		 *  derive `marketplace` when it isn't passed explicitly and as the courier on a
+		 *  marketplace Shipping group. */
+		subChannel?: string;
+		/** Basic mode only — the Digital group's alternative destination to email. */
+		recipientPhone?: string;
+		/** Basic mode only — the branch the whole sale's PickupLater group collects from. */
+		pickupStoreId?: string;
 	}
 ): void {
 	// No backend actually emails a digital parcel yet — the cart's own promise
@@ -169,6 +336,15 @@ export function syncDeliveryGroups(
 		deliveryGroups.set([]);
 		activeDeliveryGroupId.set(undefined);
 		lastSyncedBuyerAddress = undefined;
+		return;
+	}
+
+	// Basic mode (the default — see groupOrderMode) never runs the hard-split/origin/
+	// handover/user-group engine below at all: it splits ONLY by fulfilment category, one
+	// shared destination per category. The cashier opts into everything below this guard
+	// by calling enableGroupOrder.
+	if (!groupOrderActive) {
+		syncBasicGroups(items, ctx);
 		return;
 	}
 
@@ -216,6 +392,7 @@ export function syncDeliveryGroups(
 		activeDeliveryGroupId.set(undefined);
 		lastSyncedBuyerAddress = undefined;
 		groupOrderActive = false;
+		groupOrderMode.set(false);
 		return;
 	}
 
@@ -485,13 +662,34 @@ export function addUserDeliveryGroup(kind: DeliveryGroupKind = DeliveryGroupKind
  *
  * A plain hard-split (digital item, mixed origin) never needs any of this: it already
  * forces its own locked group regardless of fulfilment, with nothing to promote.
+ *
+ * Entering from BASIC mode (the common case now — see groupOrderMode) is a 0th step
+ * ahead of all three above: basic mode may already have built several category groups
+ * (Shipping/OnSite/PickupLater/PickupInStore) before the cashier ever asked for a group
+ * order. Those must become the starting groups, not get discarded in favour of a single
+ * re-merged default — each becomes a cashier-reassignable (soft-split) group of its own,
+ * exactly as if the cashier had made it by hand. Digital is the one exception: it stays a
+ * hard split in advanced mode too (never a cashier pick), so it is left exactly as-is.
  */
 export function enableGroupOrder(
 	items: TCartItem[],
 	ctx: Parameters<typeof syncDeliveryGroups>[1],
 	kind?: DeliveryGroupKind
 ): string {
+	if (!groupOrderActive) {
+		const basicGroups = get(deliveryGroups);
+		if (basicGroups.length > 0) {
+			deliveryGroups.set(
+				basicGroups.map((g) =>
+					g.kind === DeliveryGroupKind.Digital
+						? g
+						: { ...g, splitReason: SplitReason.User, locked: false }
+				)
+			);
+		}
+	}
 	groupOrderActive = true;
+	groupOrderMode.set(true);
 	syncDeliveryGroups(items, ctx);
 	deliveryGroups.update((groups) =>
 		groups.map((g) =>
@@ -594,7 +792,10 @@ export function removeUserDeliveryGroup(id: string): RemovedDeliveryGroup | unde
 	// automatically" — without this, a pickup sale that soft-split down to just its
 	// default group again would stay (wrongly) exempt from the early-return guard in
 	// syncDeliveryGroups forever, via a stale groupOrderActive from earlier in this sale.
-	if (nextGroups.length <= 1) groupOrderActive = false;
+	if (nextGroups.length <= 1) {
+		groupOrderActive = false;
+		groupOrderMode.set(false);
+	}
 
 	return { group, index, targetGroupId: receiver?.id };
 }
@@ -636,6 +837,7 @@ export function restoreDeliveryGroup(removed: RemovedDeliveryGroup): void {
 		// next unrelated cart edit (syncDeliveryGroups runs on every cart change) would wipe
 		// the just-restored split right back out.
 		groupOrderActive = result.length > 1;
+		groupOrderMode.set(groupOrderActive);
 		return result;
 	});
 }
@@ -649,6 +851,7 @@ export function resetDeliveryGroups(): void {
 	activeDeliveryGroupId.set(undefined);
 	lastSyncedBuyerAddress = undefined;
 	groupOrderActive = false;
+	groupOrderMode.set(false);
 }
 
 /**

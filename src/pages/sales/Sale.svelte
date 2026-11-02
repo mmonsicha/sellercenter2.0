@@ -64,6 +64,29 @@
 
 	const i18nStore = getContext<I18nStore>('i18n');
 	const location = useLocation();
+	const GRID_COLUMNS_KEY = 'pos.grid.columns';
+	const gridColumnOptions = [3, 4, 5] as const;
+
+	function loadGridColumns(): 3 | 4 | 5 {
+		try {
+			const stored = Number(localStorage.getItem(GRID_COLUMNS_KEY));
+			if (gridColumnOptions.includes(stored as 3 | 4 | 5)) return stored as 3 | 4 | 5;
+		} catch {
+			// ignore storage access errors (private mode, etc.)
+		}
+		return 3;
+	}
+
+	function setGridColumns(n: 3 | 4 | 5) {
+		gridColumns = n;
+		try {
+			localStorage.setItem(GRID_COLUMNS_KEY, String(n));
+		} catch {
+			// ignore storage access errors (private mode, etc.)
+		}
+	}
+
+	let gridColumns: 3 | 4 | 5 = loadGridColumns();
 	let tabLabels: string[] = [];
 	let typeProduct: string = '';
 	let activeTabIndex = 0;
@@ -408,11 +431,29 @@
 			<div class="container">
 				<div class="left-section">
 					{#if $salesProductList.total > 0}
-						<ssk-input placeholder={phdSearch} value={keyword} on:input={onSearchInputChange}>
-							<ssk-input-addon slot="prefix">
-								<ssk-icon name="outline-magnifying-glass" size="md"></ssk-icon>
-							</ssk-input-addon>
-						</ssk-input>
+						<div class="search-row">
+							<ssk-input placeholder={phdSearch} value={keyword} on:input={onSearchInputChange}>
+								<ssk-input-addon slot="prefix">
+									<ssk-icon name="outline-magnifying-glass" size="md"></ssk-icon>
+								</ssk-input-addon>
+							</ssk-input>
+							<div class="grid-density" role="group" aria-label="จำนวนสินค้าต่อแถว">
+								{#each gridColumnOptions as n}
+									<button
+										type="button"
+										class="grid-density-option"
+										class:active={gridColumns === n}
+										data-testid={`sales.grid.density.${n}`}
+										aria-pressed={gridColumns === n}
+										on:click={() => setGridColumns(n)}
+									>
+										<span class="bars" aria-hidden="true">
+											{#each Array(n + 0) as _}<i></i>{/each}
+										</span>
+									</button>
+								{/each}
+							</div>
+						</div>
 						<ssk-tabs
 							id="tabs-sales"
 							variant="button"
@@ -422,16 +463,16 @@
 							on:change={handleTabClick}
 						>
 							<div class="card-scroll" slot="content-slot-0">
-								<SaleList {loadMore} />
+								<SaleList {loadMore} columns={gridColumns} />
 							</div>
 							<div class="card-scroll" slot="content-slot-1">
-								<SaleList {loadMore} />
+								<SaleList {loadMore} columns={gridColumns} />
 							</div>
 							<div class="card-scroll" slot="content-slot-2">
-								<SaleList {loadMore} />
+								<SaleList {loadMore} columns={gridColumns} />
 							</div>
 							<div class="card-scroll" slot="content-slot-3">
-								<SaleList {loadMore} />
+								<SaleList {loadMore} columns={gridColumns} />
 							</div>
 						</ssk-tabs>
 					{:else}
@@ -539,6 +580,57 @@
 		.right-section {
 			min-width: 170px;
 		}
+	}
+
+	.search-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.75rem;
+	}
+
+	.search-row ssk-input {
+		flex: 1;
+	}
+
+	.grid-density {
+		display: flex;
+		flex-shrink: 0;
+		gap: 0.25rem;
+		padding: 0.25rem;
+		background: var(--ssk-colors-gray-100);
+		border-radius: 10px;
+	}
+
+	.grid-density-option {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 2.75rem;
+		height: 2rem;
+		padding: 0 0.625rem;
+		border: none;
+		border-radius: 8px;
+		background: transparent;
+		color: var(--ssk-colors-gray-400);
+		cursor: pointer;
+	}
+
+	.grid-density-option.active {
+		background: white;
+		color: var(--ssk-colors-primary-500, #ec5e2a);
+		box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+	}
+
+	.bars {
+		display: flex;
+		gap: 2px;
+	}
+
+	.bars i {
+		width: 3px;
+		height: 14px;
+		border-radius: 1px;
+		background: currentColor;
 	}
 
 	ssk-input {

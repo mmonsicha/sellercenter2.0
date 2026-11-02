@@ -57,7 +57,11 @@ export enum SplitReason {
 	Origin = 'origin',
 	Stock = 'stock',
 	Receive = 'receive',
-	User = 'user'
+	User = 'user',
+	// Basic mode's own hard split — a category bucket (Shipping/OnSite/PickupLater) that
+	// exists purely because another category is also present in the same sale, not because
+	// of origin/stock/a cashier choice. See syncBasicGroups.
+	Fulfilment = 'fulfilment'
 }
 
 export interface DeliveryGroup {
@@ -74,6 +78,8 @@ export interface DeliveryGroup {
 	recipientAddress?: string; // display string
 	recipientAddressId?: string;
 	recipientEmail?: string; // digital delivery destination
+	/** digital delivery destination, alternative to email — an e-voucher only needs one. */
+	recipientPhone?: string;
 	originId?: string;
 	originName?: string;
 	courier?: string;
@@ -148,7 +154,9 @@ export const canChangeGroupKind = (group: DeliveryGroup): boolean =>
 
 export const isDestinationReady = (g: DeliveryGroup): boolean => {
 	if (g.kind === DeliveryGroupKind.Digital) {
-		return !!g.recipientEmail;
+		// Either destination gets the voucher there — a phone-only buyer is not "missing"
+		// a destination just because they have no email on file.
+		return !!g.recipientEmail || !!g.recipientPhone;
 	}
 	if (isPickupKind(g.kind)) {
 		return true;
@@ -235,6 +243,8 @@ export const splitReasonText = (reason?: SplitReason): string => {
 			return 'คุณเลือกรับสินค้ารายการนี้ที่เคาน์เตอร์';
 		case SplitReason.User:
 			return 'คุณเลือกแยกพัสดุนี้เอง';
+		case SplitReason.Fulfilment:
+			return 'แยกตามรูปแบบการรับสินค้า';
 		default:
 			return '';
 	}
@@ -309,3 +319,126 @@ export const handoverItemQty = (
 	items
 		.filter((i) => !!i.lineId && group.itemIds.includes(i.lineId))
 		.reduce((sum, i) => sum + i.qty, 0);
+
+// ---------------------------------------------------------------------------------------
+// Basic mode — splits ONLY by fulfilment category (one shared destination per category),
+// as opposed to the "advanced" group-order mode where the cashier makes multiple named
+// parcels with their own per-parcel addresses. See src/stores/order/delivery-group.ts
+// syncBasicGroups for the engine that actually builds these groups.
+// ---------------------------------------------------------------------------------------
+
+// Basic mode's own category copy — deliberately separate from groupKindLabel (the
+// per-parcel card label used in advanced mode); the two are allowed to read differently
+// since a basic category chip and an advanced parcel card are different UI, not the same
+// dropdown that groupKindLabel/groupKindHint promise to stay byte-identical with.
+export const basicCategoryLabel = (kind: DeliveryGroupKind): string => {
+	switch (kind) {
+		case DeliveryGroupKind.PickupLater:
+			return 'รับภายหลัง';
+		case DeliveryGroupKind.Shipping:
+			return 'จัดส่ง';
+		case DeliveryGroupKind.OnSite:
+			return 'บริการ';
+		case DeliveryGroupKind.Digital:
+			return 'ดิจิทัล';
+		case DeliveryGroupKind.PickupInStore:
+		default:
+			return 'รับทันที';
+	}
+};
+
+// One shared colour-per-kind mapping for basic mode's own UI (the pile section badges in
+// CartFulfilmentPiles and the per-line picker pill in CartItem) — both must read as the
+// same visual vocabulary, so neither re-derives this switch on its own.
+export const fulfilmentTone = (
+	kind: DeliveryGroupKind
+): 'success' | 'warning' | 'info' | 'violet' | 'primary' => {
+	switch (kind) {
+		case DeliveryGroupKind.PickupLater:
+			return 'warning';
+		case DeliveryGroupKind.Shipping:
+			return 'info';
+		case DeliveryGroupKind.OnSite:
+			return 'violet';
+		case DeliveryGroupKind.Digital:
+			return 'primary';
+		case DeliveryGroupKind.PickupInStore:
+		default:
+			return 'success';
+	}
+};
+
+// The fixed display/bucket order basic mode lays its category groups out in — never the
+// order items happen to appear in the cart.
+export const BASIC_CATEGORY_ORDER: DeliveryGroupKind[] = [
+	DeliveryGroupKind.PickupInStore,
+	DeliveryGroupKind.PickupLater,
+	DeliveryGroupKind.Shipping,
+	DeliveryGroupKind.OnSite,
+	DeliveryGroupKind.Digital
+];
+
+// Marketplace channels ship through the platform's own logistics (Shopee/Lazada/TikTok
+// Shop) — a physical line sold through one of these can never be handed over the counter
+// or picked up later, it is always a single Shipping group billed to the platform, never
+// the merchant's own courier. Matches the `value`s already listed in order.ts's
+// `salesChannels`/`standardDeliveries` so this never drifts from what the rest of the
+// cart calls these channels.
+const MARKETPLACE_SUB_CHANNELS = new Set(['shopee', 'lazada', 'tiktok']);
+
+export const isMarketplaceChannel = (subChannel?: string): boolean =>
+	!!subChannel && MARKETPLACE_SUB_CHANNELS.has(subChannel);
+
+export interface LineFulfilmentCtx {
+	channel: 'pos' | 'online' | 'linkbill';
+	marketplace: boolean;
+}
+
+// Which DeliveryGroupKind(s) a single LINE may legally sit in, given what it is (digital/
+// service/physical) and how the sale is being sold. A digital or service item has exactly
+// one legal destination — it is never a choice. A marketplace physical line has exactly
+// one too (the platform's own logistics). Everything else gets a real menu: an online/
+// link-bill physical line may ship now or be picked up later (no counter — nobody is
+// standing at one), while a POS physical line gets the full three-way choice a cashier
+// actually has in front of them.
+export function lineFulfilmentOptions(
+	item: { fulfilmentType?: string },
+	ctx: LineFulfilmentCtx
+): DeliveryGroupKind[] {
+	const kind = itemFulfilmentOf(item.fulfilmentType);
+	if (kind === ItemFulfilmentType.Digital) return [DeliveryGroupKind.Digital];
+	if (kind === ItemFulfilmentType.Service) return [DeliveryGroupKind.OnSite];
+	if (ctx.marketplace) return [DeliveryGroupKind.Shipping];
+	if (ctx.channel === 'online' || ctx.channel === 'linkbill') {
+		return [DeliveryGroupKind.Shipping, DeliveryGroupKind.PickupLater];
+	}
+	return [DeliveryGroupKind.PickupInStore, DeliveryGroupKind.PickupLater, DeliveryGroupKind.Shipping];
+}
+
+// The line's actual, effective kind in basic mode — one line, one category, with a clear
+// priority order: (1) a digital/service/marketplace item has no choice at all; (2) the
+// cashier's own explicit per-line pick (lineFulfilment) wins, as long as it is still a
+// legal option for this line; (3) the OLD per-line toggle (receiveMode === 'now', POS
+// only) is honoured for a line nobody has re-picked yet, so an already-flipped "รับเลยที่
+// เคาน์เตอร์" line keeps meaning the same thing it always did; (4) otherwise the line
+// just follows however the whole sale is being collected; (5) and failing even that,
+// whatever the first legal option is.
+export function resolveLineKind(
+	item: { fulfilmentType?: string; lineFulfilment?: string; receiveMode?: string },
+	saleDefaultKind: DeliveryGroupKind,
+	ctx: LineFulfilmentCtx
+): DeliveryGroupKind {
+	const options = lineFulfilmentOptions(item, ctx);
+	if (options.length === 1) return options[0];
+
+	if (item.lineFulfilment && options.includes(item.lineFulfilment as DeliveryGroupKind)) {
+		return item.lineFulfilment as DeliveryGroupKind;
+	}
+
+	if (!item.lineFulfilment && ctx.channel === 'pos' && item.receiveMode === ReceiveMode.Now) {
+		return DeliveryGroupKind.PickupInStore;
+	}
+
+	if (options.includes(saleDefaultKind)) return saleDefaultKind;
+	return options[0];
+}

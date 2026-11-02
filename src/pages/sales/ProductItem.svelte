@@ -19,6 +19,7 @@
 	} from './variant/util.variant';
 
 	export let product_info: SaleProduct;
+	export let compact: boolean = false;
 	var variantPrice: number = 0;
 	var variantImage: string;
 	var variantSku: string;
@@ -80,14 +81,14 @@
 	}
 </script>
 
-<div class="card" on:click={_onClickItem}>
+<div class="card" class:compact on:click={_onClickItem}>
 	<img src={getImageUrl(product_info.image)} alt={product_info.label} />
 	<div class="card-content">
 		<!-- Same 16px as the product's name in the cart row: the item reads identically in
 		     the place you pick it and the place it lands. Price stays 16px too — the
 		     hierarchy between them is carried by colour, as everywhere else in the app. -->
-		<ssk-text size="md">{product_info.label}</ssk-text>
-		<ssk-text color="primary"
+		<div class="name"><ssk-text size={compact ? 'sm' : 'md'}>{product_info.label}</ssk-text></div>
+		<ssk-text color="primary" size={compact ? 'sm' : 'md'}
 			>{formatPriceWithBath(product_info.price.min, product_info.price.max)}</ssk-text
 		>
 	</div>
@@ -103,7 +104,7 @@
 
 	img {
 		width: 100%;
-		height: 216px;
+		aspect-ratio: 1 / 1;
 		object-fit: cover;
 	}
 
@@ -113,15 +114,26 @@
 		gap: 0.5rem;
 	}
 
+	.name {
+		display: -webkit-box;
+		-webkit-line-clamp: 2;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+	}
+
+	/* Columns >= 5 (passed down as `compact`): card width shrinks, so keep the
+	   same density of padding/gap as the existing 1024px/480px steps instead of
+	   letting the full-size spacing crowd out the smaller image. */
+	.card.compact .card-content {
+		padding: 12px;
+		gap: 0.375rem;
+	}
+
 	/* Matches SaleList.svelte's own 1024px grid shrink (216px -> 160px columns) —
 	   the side-by-side layout never changes, so the product pane itself is
 	   narrower than on desktop at tablet widths, and a 216px-tall image sized
 	   for a 216px-wide column looks stretched once the column is only 160px. */
 	@media (max-width: 1024px) {
-		img {
-			height: 160px;
-		}
-
 		.card-content {
 			padding: 12px;
 			gap: 0.375rem;
@@ -130,10 +142,6 @@
 
 	/* Matches SaleList's 120px column floor for a phone-narrow pane. */
 	@media (max-width: 480px) {
-		img {
-			height: 120px;
-		}
-
 		.card-content {
 			padding: 8px;
 			gap: 0.25rem;

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import CustomInputNumber from '$components/CustomInputNumber.svelte';
 	import Modal from '$components/modal/Modal.svelte';
 	import type { TCartItem } from '$stores/cart';
@@ -8,6 +9,9 @@
 	import {
 		DeliveryGroupKind,
 		ItemFulfilmentType,
+		basicCategoryLabel,
+		fulfilmentTone,
+		groupKindHint,
 		groupKindIcon,
 		groupKindLabel,
 		isServiceItem,
@@ -68,6 +72,12 @@
 	export let pile: 'now' | 'ship' | undefined = undefined;
 	export let onMovePile: ((item: TCartItem) => void) | undefined = undefined;
 	export let sellingOriginId: string | undefined = undefined;
+	// Basic mode's per-line fulfilment picker (CartFulfilmentPiles). All three undefined
+	// (the `pile`/CartReceivePiles call sites, and the ordinary single-list cart) means
+	// no picker renders at all — byte-identical to today's row.
+	export let fulfilmentOptionsOf: ((item: TCartItem) => string[]) | undefined = undefined;
+	export let fulfilmentOf: ((item: TCartItem) => string) | undefined = undefined;
+	export let onChangeFulfilment: ((item: TCartItem, kind: string) => void) | undefined = undefined;
 	var showRemoveModal: boolean = false;
 	var showZeroQtyModal: boolean = false;
 	var removeItem: TCartItem = items[0];
@@ -132,6 +142,112 @@
 		});
 	}
 
+	// `as DeliveryGroupKind` inline in markup breaks Svelte's template parser (consumed
+	// as module script, not an expression) — these wrappers only satisfy TS in the
+	// template, the underlying functions accept the plain string fine at runtime.
+	function labelOf(kind: string): string {
+		return basicCategoryLabel(kind as DeliveryGroupKind);
+	}
+
+	function iconOf(kind: string): string {
+		return groupKindIcon(kind as DeliveryGroupKind);
+	}
+
+	function hintOf(kind: string): string {
+		return groupKindHint(kind as DeliveryGroupKind);
+	}
+
+	function toneOf(kind: string): string {
+		return fulfilmentTone(kind as DeliveryGroupKind);
+	}
+
+	// The per-line pill dropdown (replaces the old native <select>). One line at a time
+	// can be open; openLineId doubles as "which item's popover, if any" and "is my own
+	// popover the open one" for every row's own markup below.
+	let openLineId: string | undefined;
+	// The menu is position: fixed, so it would detach from its pill once anything scrolls.
+	const closeMenuOnMove = () => (openLineId = undefined);
+	onMount(() => {
+		window.addEventListener('scroll', closeMenuOnMove, true);
+		return () => window.removeEventListener('scroll', closeMenuOnMove, true);
+	});
+	let activeIndex = 0;
+	let menuPos: { top?: number; bottom?: number; left: number; width: number } | undefined;
+	let wrapperEls: Record<string, HTMLElement> = {};
+	let triggerEls: Record<string, HTMLButtonElement> = {};
+
+	function closeLineMenu() {
+		openLineId = undefined;
+		menuPos = undefined;
+	}
+
+	function positionLineMenu(lineId: string) {
+		const el = triggerEls[lineId];
+		if (!el) return;
+		const rect = el.getBoundingClientRect();
+		const estimatedMenuHeight = 220;
+		const spaceBelow = window.innerHeight - rect.bottom;
+		const openUpward = spaceBelow < estimatedMenuHeight && rect.top > spaceBelow;
+		menuPos = {
+			left: rect.left,
+			width: Math.max(rect.width, 200),
+			...(openUpward ? { bottom: window.innerHeight - rect.top + 4 } : { top: rect.bottom + 4 })
+		};
+	}
+
+	function toggleLineMenu(item: TCartItem, options: string[], current: string) {
+		const lineId = item.lineId ?? '';
+		if (openLineId === lineId) {
+			closeLineMenu();
+			return;
+		}
+		openLineId = lineId;
+		activeIndex = Math.max(options.indexOf(current), 0);
+		positionLineMenu(lineId);
+	}
+
+	function selectLineOption(item: TCartItem, kind: string) {
+		onChangeFulfilment?.(item, kind);
+		closeLineMenu();
+	}
+
+	function onTriggerKeydown(e: KeyboardEvent, item: TCartItem, options: string[], current: string) {
+		if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
+			e.preventDefault();
+			toggleLineMenu(item, options, current);
+		} else if (e.key === 'Escape') {
+			closeLineMenu();
+		}
+	}
+
+	function onMenuKeydown(e: KeyboardEvent, item: TCartItem, options: string[]) {
+		if (e.key === 'ArrowDown') {
+			e.preventDefault();
+			activeIndex = (activeIndex + 1) % options.length;
+		} else if (e.key === 'ArrowUp') {
+			e.preventDefault();
+			activeIndex = (activeIndex - 1 + options.length) % options.length;
+		} else if (e.key === 'Enter') {
+			e.preventDefault();
+			selectLineOption(item, options[activeIndex]);
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			closeLineMenu();
+			triggerEls[openLineId ?? '']?.focus();
+		}
+	}
+
+	function onWindowClick(e: MouseEvent) {
+		if (!openLineId) return;
+		const target = e.target as Node;
+		if (wrapperEls[openLineId]?.contains(target)) return;
+		closeLineMenu();
+	}
+
+	function onWindowKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape' && openLineId) closeLineMenu();
+	}
+
 	function _onUpdateItemQty(item: TCartItem) {
 		if (item.qty === 0) {
 			removeItem = item;
@@ -152,6 +268,8 @@
 		loadKeywords();
 	}
 </script>
+
+<svelte:window on:click={onWindowClick} on:keydown={onWindowKeydown} on:resize={closeMenuOnMove} />
 
 <Modal
 	toggleModal={toggleRemoveModal}
@@ -304,7 +422,8 @@
 				     row of a line while putting the two things a cashier scans for — what kind
 				     of item this is, and what it costs — side by side. -->
 				<div class="meta-line">
-					{#if $showDeliveryDetail}
+					<!-- With the per-line picker, the section header already names the category. -->
+					{#if $showDeliveryDetail && !fulfilmentOf}
 						<div class="delivery-badges">
 							{#if isServiceItem(item.fulfilmentType)}
 								<!-- A service item joins no group (see syncDeliveryGroups), so it gets its
@@ -366,6 +485,74 @@
 						<ssk-text color="primary">{formatPriceWithBath(item.price)}</ssk-text>
 					</div>
 				</div>
+				{#if fulfilmentOptionsOf && fulfilmentOf}
+					{@const options = fulfilmentOptionsOf(item)}
+					{@const current = fulfilmentOf(item)}
+					{#if options.length > 1}
+						{@const lineId = item.lineId ?? ''}
+						<div
+							class="line-fulfilment"
+							on:click|stopPropagation
+							bind:this={wrapperEls[lineId]}
+						>
+							<button
+								type="button"
+								class="line-fulfilment-pill"
+								data-tone={toneOf(current)}
+								aria-haspopup="listbox"
+								aria-expanded={openLineId === lineId}
+								aria-label="รูปแบบการรับสินค้าของรายการนี้"
+								data-testid={`sales.cart.line.fulfilment.${lineId}`}
+								bind:this={triggerEls[lineId]}
+								on:click={() => toggleLineMenu(item, options, current)}
+								on:keydown={(e) => onTriggerKeydown(e, item, options, current)}
+							>
+								<ssk-icon name={iconOf(current)} size="xs"></ssk-icon>
+								<span class="line-fulfilment-pill-label">{labelOf(current)}</span>
+								<ssk-icon name="solid-chevron-down" size="xs"></ssk-icon>
+							</button>
+							{#if openLineId === lineId && menuPos}
+								<ul
+									class="line-fulfilment-menu"
+									role="listbox"
+									style={`left:${menuPos.left}px; width:${menuPos.width}px; ${
+										menuPos.top !== undefined ? `top:${menuPos.top}px;` : `bottom:${menuPos.bottom}px;`
+									}`}
+									on:keydown={(e) => onMenuKeydown(e, item, options)}
+								>
+									{#each options as opt, i (opt)}
+										<li
+											role="option"
+											aria-selected={opt === current}
+											class:active={i === activeIndex}
+											data-testid={`sales.cart.line.fulfilment.${lineId}.option.${opt}`}
+											on:click={() => selectLineOption(item, opt)}
+										>
+											<ssk-icon name={iconOf(opt)} size="xs"></ssk-icon>
+											<span class="line-fulfilment-option-text">
+												<span class="line-fulfilment-option-label">{labelOf(opt)}</span>
+												<span class="line-fulfilment-option-hint">{hintOf(opt)}</span>
+											</span>
+											{#if opt === current}
+												<ssk-icon name="outline-check" size="xs"></ssk-icon>
+											{/if}
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</div>
+					{:else if options.length === 1 && current !== DeliveryGroupKind.Shipping}
+						<!-- Digital/service have exactly one legal option — show it as a read-only
+						     badge instead of a dropdown with nothing to choose. Marketplace Shipping
+						     is suppressed entirely per spec (B8: no per-line picker at all). -->
+						<span
+							class="line-fulfilment-badge"
+							data-testid={`sales.cart.line.fulfilment.${item.lineId}`}
+						>
+							{labelOf(current)}
+						</span>
+					{/if}
+				{/if}
 				{#if pile === 'ship' && blockReason}
 					<!-- Names the actual blocker on the row itself — what stops a cashier
 					     pressing a dead ▲ and only finding out at the pay gate. -->
@@ -462,6 +649,111 @@
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
+	}
+
+	.line-fulfilment {
+		position: relative;
+		margin-top: 0.1875rem;
+	}
+
+	.line-fulfilment-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		font: inherit;
+		font-size: var(--ssk-font-size-xs);
+		font-weight: 600;
+		border: none;
+		border-radius: 999px;
+		padding: 0.1875rem 0.5rem;
+		cursor: pointer;
+		max-width: 100%;
+	}
+
+	.line-fulfilment-pill[data-tone='success'] {
+		background: var(--ssk-colors-success-50, #ecfdf5);
+		color: var(--ssk-colors-success-700, #047857);
+	}
+
+	.line-fulfilment-pill[data-tone='warning'] {
+		background: var(--ssk-colors-warning-50, #fffbeb);
+		color: var(--ssk-colors-warning-700, #b45309);
+	}
+
+	.line-fulfilment-pill[data-tone='info'] {
+		background: var(--ssk-colors-info-50, #eff6ff);
+		color: var(--ssk-colors-info-700, #1d4ed8);
+	}
+
+	.line-fulfilment-pill[data-tone='violet'] {
+		background: var(--ssk-colors-violet-50, #f5f3ff);
+		color: var(--ssk-colors-violet-700, #6d28d9);
+	}
+
+	.line-fulfilment-pill[data-tone='primary'] {
+		background: var(--ssk-colors-primary-50, #fff7ed);
+		color: var(--ssk-colors-primary-700, #c2410c);
+	}
+
+	.line-fulfilment-pill-label {
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+
+	/* position: fixed + a rect computed at open time, rather than absolute inside
+	   .cart-item — the scroll container clips an absolutely-positioned child the
+	   moment it would overflow, which a pill near the bottom of the list hits often. */
+	.line-fulfilment-menu {
+		position: fixed;
+		z-index: 1000;
+		margin: 0;
+		padding: 0.25rem;
+		list-style: none;
+		background: white;
+		border-radius: 8px;
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+		max-height: 16rem;
+		overflow-y: auto;
+	}
+
+	.line-fulfilment-menu li {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.5rem;
+		border-radius: 6px;
+		cursor: pointer;
+	}
+
+	.line-fulfilment-menu li:hover,
+	.line-fulfilment-menu li.active {
+		background: var(--ssk-colors-gray-50);
+	}
+
+	.line-fulfilment-option-text {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+		flex: 1;
+	}
+
+	.line-fulfilment-option-label {
+		font-size: var(--ssk-font-size-sm);
+		font-weight: 600;
+		color: var(--ssk-colors-gray-800);
+	}
+
+	.line-fulfilment-option-hint {
+		font-size: var(--ssk-font-size-xs);
+		color: var(--ssk-colors-gray-500);
+	}
+
+	.line-fulfilment-badge {
+		display: inline-block;
+		margin-top: 0.1875rem;
+		font-size: var(--ssk-font-size-xs);
+		color: var(--ssk-colors-gray-500);
 	}
 
 	.qty {
