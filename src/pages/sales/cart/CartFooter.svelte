@@ -18,8 +18,8 @@
 	} from '$stores/order/order';
 	import {
 		commitDeliveryGroupsToOrder,
+		deliveryGroups,
 		deliverySummary,
-		hasSplitDelivery,
 		showDeliveryDetail
 	} from '$stores/order/delivery-group';
 	import { DeliveryGroupKind, handoverItemQty } from '$lib/entities/order/delivery-group';
@@ -437,28 +437,24 @@
 		0
 	);
 
-	// Precise about WHAT is being priced now that a group can be pickup/on-site/shipping
-	// independently — "พัสดุ" only ever meant a real courier parcel.
-	$: shippingFeeLabel = (() => {
-		const { shippingCount, onSiteCount } = $deliverySummary;
-		if (shippingCount > 0 && onSiteCount > 0) {
-			return `ค่าจัดส่ง (${shippingCount} พัสดุ) + ค่าเดินทาง (${onSiteCount} กลุ่ม)`;
-		}
-		if (onSiteCount > 0) {
-			return `ค่าเดินทาง (${onSiteCount} กลุ่ม)`;
-		}
-		// parcelCount (the old fallback here) counted EVERY non-handover group — pickup-now
-		// and pickup-later groups included, which never carry a shipping fee at all. That
-		// made an ordinary sale with one real parcel and two pickup groups read as
-		// "ค่าจัดส่ง (3 พัสดุ)", and — since those two groups' shippingFee is always
-		// undefined, having never been asked for one — deliverySummary.feeUnknown then
-		// read the whole sale as "ยังไม่ครบ" even when the one real parcel was fully set.
-		return `ค่าจัดส่ง (${shippingCount} พัสดุ)`;
-	})();
+	// Keep courier shipping and on-site travel fees on separate rows so each amount has
+	// an unambiguous label in the compact cart summary.
+	$: shippingFeeGroups = $deliveryGroups.filter((group) => group.kind === DeliveryGroupKind.Shipping);
+	$: onSiteFeeGroups = $deliveryGroups.filter((group) => group.kind === DeliveryGroupKind.OnSite);
+	$: shippingFeeTotal = shippingFeeGroups.reduce((sum, group) => sum + (group.shippingFee ?? 0), 0);
+	$: onSiteFeeTotal = onSiteFeeGroups.reduce((sum, group) => sum + (group.shippingFee ?? 0), 0);
 
 	// Same figure the (now optionally hidden) breakdown's own grand-total row shows —
-	// the collapsed bar needs it too.
-	$: grandTotal = summary + ($showDeliveryDetail ? $deliverySummary.totalFee : $shippingFee);
+	// the collapsed bar needs it too. Gated on $deliveryGroups.length (not
+	// $showDeliveryDetail) — a single-bucket sale (the common case) already has its fee
+	// live on that one group the moment the cashier saves it in ข้อมูลการจัดส่ง, but
+	// $showDeliveryDetail stays false for it (needs 2+ groups or Digital/OnSite), which
+	// was leaving this reading the stale order-level $shippingFee (only ever synced into
+	// $orderData at checkout via commitDeliveryGroupsToOrder) instead — the fee looked
+	// like it never saved. $deliveryGroups is only ever empty when multi-parcel is off
+	// (VITE_DISABLE_MULTI_PARCEL, staging/production today) or the cart itself is, both
+	// cases where $shippingFee is correctly the only real source left.
+	$: grandTotal = summary + ($deliveryGroups.length > 0 ? $deliverySummary.totalFee : $shippingFee);
 
 	function toggleClearCartModal() {
 		showClearCartModal = !showClearCartModal;
@@ -602,7 +598,12 @@
 					// Folds the groups' combined shipping fee into the order's single Delivery
 					// right before makeOrder reads it — see delivery-group.ts's own comment on
 					// why this stays a fold rather than a real per-group payload today.
-					if ($hasSplitDelivery) commitDeliveryGroupsToOrder();
+					// Fold the delivery group(s) into the order's single Delivery before checkout reads
+				// it — not just on a split: a single-group sale (POS ShopDelivery/OnSite, or any
+				// online sale) sets its method/fee on the group via the fulfilment-info panel
+				// now, not on orderData.deliveries directly, so this must run whenever a group
+				// exists at all. commitDeliveryGroupsToOrder() is already a no-op on an empty list.
+				if ($deliveryGroups.length > 0) commitDeliveryGroupsToOrder();
 				},
 				onSuccess: async () => {
 					const orderId = $orderData.orderId ?? '';
@@ -651,7 +652,12 @@
 		await handleOrder({
 			flow: OrderFlow.POS_ONLINE,
 			beforeMakeOrder: () => {
-				if ($hasSplitDelivery) commitDeliveryGroupsToOrder();
+				// Fold the delivery group(s) into the order's single Delivery before checkout reads
+				// it — not just on a split: a single-group sale (POS ShopDelivery/OnSite, or any
+				// online sale) sets its method/fee on the group via the fulfilment-info panel
+				// now, not on orderData.deliveries directly, so this must run whenever a group
+				// exists at all. commitDeliveryGroupsToOrder() is already a no-op on an empty list.
+				if ($deliveryGroups.length > 0) commitDeliveryGroupsToOrder();
 			},
 			onSuccess: async () => {
 				await getOrder($currentStore.id!, $orderData.orderId!);
@@ -694,7 +700,12 @@
 		await handleOrder({
 			flow,
 			beforeMakeOrder: () => {
-				if ($hasSplitDelivery) commitDeliveryGroupsToOrder();
+				// Fold the delivery group(s) into the order's single Delivery before checkout reads
+				// it — not just on a split: a single-group sale (POS ShopDelivery/OnSite, or any
+				// online sale) sets its method/fee on the group via the fulfilment-info panel
+				// now, not on orderData.deliveries directly, so this must run whenever a group
+				// exists at all. commitDeliveryGroupsToOrder() is already a no-op on an empty list.
+				if ($deliveryGroups.length > 0) commitDeliveryGroupsToOrder();
 				updatePayment({
 					type: PaymentType.Cash,
 					total: summary
@@ -815,7 +826,7 @@
 	title="เพิ่มส่วนลด"
 	description={`ใช้กับยอดรวม ${formatPriceWithBath(total)}`}
 	hPosition="left"
-	width="min(24rem, calc(100vw - 2.5rem))"
+	width="min(36rem, calc(100vw - 2.5rem))"
 >
 	<div class="modal-fields" slot="body">
 		<!-- 3 mutually exclusive ways to reach one discount: a %, a flat บาท amount, or a
@@ -1287,22 +1298,26 @@
 					>{totalItemCount} รายการรวม (รวมทุกกลุ่ม)</ssk-text
 				>
 			</div>
-			<!-- Split orders price shipping per parcel (OQ 3 = per-parcel), and a lone digital
-			     parcel counts too (see showDeliveryDetail) — its fee is a known ฿0, not an
-			     absent row, so this shows regardless of channel — an online sale is no longer
-			     the only one that ships. Label now distinguishes real courier parcels
-			     (Shipping) from on-site travel-fee groups — see shippingFeeLabel. -->
-			<div class="summary-row summary-secondary">
-				<ssk-text class="summary-row-label" fontSize="20px" color="gray.500">
-					{shippingFeeLabel}
-					{#if $deliverySummary.feeUnknown}
-						<span class="fee-incomplete"> · ยังไม่ครบ</span>
-					{/if}
-				</ssk-text>
-				<ssk-text fontSize="20px" color="gray.500">
-					{formatPriceWithBath($deliverySummary.totalFee)}
-				</ssk-text>
-			</div>
+			{#if $deliverySummary.shippingCount > 0}
+				<div class="summary-row summary-secondary">
+					<ssk-text class="summary-row-label" fontSize="20px" color="gray.500">
+						ค่าจัดส่ง ({$deliverySummary.shippingCount} พัสดุ)
+					</ssk-text>
+					<ssk-text fontSize="20px" color="gray.500">
+						{formatPriceWithBath(shippingFeeTotal)}
+					</ssk-text>
+				</div>
+			{/if}
+			{#if $deliverySummary.onSiteCount > 0}
+				<div class="summary-row summary-secondary">
+					<ssk-text class="summary-row-label" fontSize="20px" color="gray.500">
+						ค่าเดินทาง ({$deliverySummary.onSiteCount} กลุ่ม)
+					</ssk-text>
+					<ssk-text fontSize="20px" color="gray.500">
+						{formatPriceWithBath(onSiteFeeTotal)}
+					</ssk-text>
+				</div>
+			{/if}
 		{:else if isOnline}
 			<div class="summary-row summary-secondary">
 				<ssk-text fontSize="20px" color="gray.500">
@@ -1312,9 +1327,13 @@
 						fallbackLang="default"
 					/>
 				</ssk-text>
-				<ssk-text fontSize="20px" color="gray.500"
-					>{formatPriceWithBath($shippingFee)}</ssk-text
-				>
+				<ssk-text fontSize="20px" color="gray.500">
+					{#if $deliveryGroups.length > 0}
+						{formatPriceWithBath(shippingFeeTotal)}
+					{:else}
+						{formatPriceWithBath($shippingFee)}
+					{/if}
+				</ssk-text>
 			</div>
 		{/if}
 		<div class="summary-row summary-grand-total">
@@ -1326,9 +1345,7 @@
 				/>
 			</ssk-text>
 			<ssk-text fontSize="24px" color="primary" fontWeight="bold">
-				{formatPriceWithBath(
-					summary + ($showDeliveryDetail ? $deliverySummary.totalFee : $shippingFee)
-				)}
+				{formatPriceWithBath(grandTotal)}
 			</ssk-text>
 		</div>
 	</div>
@@ -1349,9 +1366,7 @@
 				lang={$currentLanguage.code}
 				fallbackLang="default"
 			/>
-			{#if $showDeliveryDetail && $deliverySummary.feeUnknown}
-				<span class="fee-incomplete"> · ค่าส่งยังไม่ครบ</span>
-			{:else if hasDiscount}
+			{#if hasDiscount}
 				<span class="summary-collapsed-discount"> · ส่วนลด -{formatPriceWithBath(discount)}</span>
 			{/if}
 		</span>
@@ -1415,17 +1430,6 @@
 			</ssk-button>
 		{/if}
 	</div>
-	{#if $deliverySummary.handoverGroup}
-		<!-- The handover itself happens outside the system: the order records that these
-		     lines are not shipping, nothing records that the goods actually left the
-		     counter. A customer walking out without them is the failure mode this feature
-		     creates, so the count to hand over sits under the pay button, where the cashier
-		     is already looking when the payment goes through. -->
-		<div class="handover-hint" data-testid="sales.cart.footer.handover-hint">
-			<ssk-icon name="outline-shopping-bag" size="xs" themeColor="success"></ssk-icon>
-			หลังเก็บเงิน ส่งมอบ {handoverQty} ชิ้นให้ลูกค้าที่เคาน์เตอร์
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -1451,14 +1455,19 @@
 	}
 
 	.quick-action {
+		display: flex;
 		flex: 1 1 0;
+		align-items: center;
 		min-width: 0;
+		width: 100%;
 		border: 1px dashed var(--ssk-colors-gray-300);
 		border-radius: 8px;
 		overflow: hidden;
 	}
 
 	.quick-action.has-value {
+		align-items: stretch;
+		width: 100%;
 		border-color: transparent;
 	}
 
@@ -1478,6 +1487,7 @@
 	   couldn't say alongside the actual baht amount or the note text itself. */
 	.chip-wrap {
 		position: relative;
+		width: 100%;
 		height: 100%;
 	}
 
@@ -1942,11 +1952,8 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
-		margin-bottom: 0.25rem;
 	}
 
-	/* Expanded-state collapse control, pinned to the box's own top-right corner so it
-	   doesn't take a row of its own. */
 	.summary-collapse-toggle {
 		position: absolute;
 		top: 0.5rem;
@@ -1989,7 +1996,6 @@
 		font-family: inherit;
 		cursor: pointer;
 		flex: 0 0 auto;
-		margin-bottom: 0.25rem;
 	}
 
 	.summary-collapsed:hover {
@@ -2044,6 +2050,7 @@
 
 	.summary-subtotal {
 		color: var(--ssk-colors-gray-700);
+		padding-right: 2rem;
 	}
 
 	.summary-secondary {
@@ -2066,21 +2073,6 @@
 		text-align: right;
 	}
 
-	/* A known-partial fee is a fact about the label, not the number — the amount shown
-	   is still the real sum of what IS known (§6: never let ฿0 fake a whole answer). */
-	.fee-incomplete {
-		color: var(--ssk-colors-warning-700, #c99d1a);
-		font-weight: 500;
-	}
-
-	/* This is the button's own footnote: a thing still to do, not a thing that is wrong. */
-	.handover-hint {
-		display: flex;
-		align-items: center;
-		gap: 0.25rem;
-		font-size: var(--ssk-font-size-xs);
-		color: var(--ssk-colors-success-600, #16a34a);
-	}
 
 	/* The 3-up quick-discount row and the 2-up ประเภท toggle stay the same column
 	   count down to 480px — they're already equal fractional columns, so they just

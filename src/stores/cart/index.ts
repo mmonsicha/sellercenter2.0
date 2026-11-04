@@ -67,4 +67,15 @@ export type TCartItem = {
 	// undefined = follow whatever the rest of the sale/line defaults to; see
 	// resolveLineKind in $lib/entities/order/delivery-group.ts.
 	lineFulfilment?: string;
+	// "เพิ่มตัวเลือกรับสินค้า" — which branch THIS line's รับภายหลัง pile was created for,
+	// when the sale has more than one. undefined follows the sale's own pickupStoreId
+	// (Cart.svelte), same as every line added before multiple รับภายหลัง piles existed.
+	// Meaningless on a line that doesn't resolve to PickupLater.
+	linePickupStoreId?: string;
+	// "เพิ่มตัวเลือกรับสินค้า" — which customer address THIS line's จัดส่งจากหน้าร้าน pile
+	// ships to, when the sale has more than one Shipping pile open (see
+	// OpenFulfilmentPile.addressId). undefined follows the sale's own default recipient
+	// address, same as every line added before multiple Shipping piles existed. Meaningless
+	// on a line that doesn't resolve to Shipping.
+	lineAddressId?: string;
 };

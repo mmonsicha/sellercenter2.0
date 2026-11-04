@@ -24,34 +24,37 @@ import { PaymentType, toPaymentType } from '$lib/entities/payment/payment';
 import type { components } from './management-gen';
 type definitions = components['schemas'];
 
-export const toAddress = (a: definitions['addressData']): Address => {
+export const toAddress = (a: definitions['addressData'] | undefined): Address => {
 	return {
-		administrativeAreaLevel1: a.administrative_area_level_1 ?? '',
-		administrativeAreaLevel2: a.administrative_area_level_2 ?? '',
-		administrativeAreaLevel3: a.administrative_area_level_3 ?? '',
-		localityAreaLevel1: a.locality_area_level_1 ?? '',
-		localityAreaLevel2: a.locality_area_level_2 ?? '',
-		localityAreaLevel3: a.locality_area_level_3 ?? '',
-		postalCode: a.postal_code ?? '',
-		street: a.street ?? '',
+		administrativeAreaLevel1: a?.administrative_area_level_1 ?? '',
+		administrativeAreaLevel2: a?.administrative_area_level_2 ?? '',
+		administrativeAreaLevel3: a?.administrative_area_level_3 ?? '',
+		localityAreaLevel1: a?.locality_area_level_1 ?? '',
+		localityAreaLevel2: a?.locality_area_level_2 ?? '',
+		localityAreaLevel3: a?.locality_area_level_3 ?? '',
+		postalCode: a?.postal_code ?? '',
+		street: a?.street ?? '',
 		country: {
-			iso: a.country?.iso_alpha_3 ?? '',
-			name: a.country.name,
+			iso: a?.country?.iso_alpha_3 ?? '',
+			name: a?.country?.name ?? '',
 			addressMapper: {
 				administrativeAreaLevel1:
-					a.country.administrative_division_name.administrative_area_level_1 ?? '',
+					a?.country?.administrative_division_name?.administrative_area_level_1 ?? '',
 				administrativeAreaLevel2:
-					a.country.administrative_division_name.administrative_area_level_2 ?? '',
+					a?.country?.administrative_division_name?.administrative_area_level_2 ?? '',
 				administrativeAreaLevel3:
-					a.country.administrative_division_name.administrative_area_level_3 ?? '',
-				localityAreaLevel1: a.country.administrative_division_name.locality_area_level_1 ?? '',
-				localityAreaLevel2: a.country.administrative_division_name.locality_area_level_2 ?? '',
-				localityAreaLevel3: a.country.administrative_division_name.locality_area_level_3 ?? ''
+					a?.country?.administrative_division_name?.administrative_area_level_3 ?? '',
+				localityAreaLevel1:
+					a?.country?.administrative_division_name?.locality_area_level_1 ?? '',
+				localityAreaLevel2:
+					a?.country?.administrative_division_name?.locality_area_level_2 ?? '',
+				localityAreaLevel3:
+					a?.country?.administrative_division_name?.locality_area_level_3 ?? ''
 			}
 		},
 		coordinates: {
-			latitude: a.coordinates.latitude ?? 0,
-			longitude: a.coordinates.longitude ?? 0
+			latitude: a?.coordinates?.latitude ?? 0,
+			longitude: a?.coordinates?.longitude ?? 0
 		}
 	};
 };

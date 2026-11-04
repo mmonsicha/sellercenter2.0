@@ -30,10 +30,11 @@
 	import PickList from './PickList.svelte';
 
 	/**
-	 * Customer and delivery address in one surface, the way the online drawer
-	 * (DrawerOnline) has always done it: one drawer whose body switches view, so the
-	 * cashier never has to hop between a panel row, a modal and a second drawer to
-	 * finish one thought ("who is this order for, and where does it go").
+	 * Customer and delivery address in one surface — the single drawer used for every
+	 * channel that can ship (POS ShopDelivery/OnSite, online, Link Bill): one drawer
+	 * whose body switches view, so the cashier never has to hop between a panel row, a
+	 * modal and a second drawer to finish one thought ("who is this order for, and
+	 * where does it go").
 	 */
 	export let showDrawer: boolean = false;
 	export let toggleDrawer: () => void;
@@ -121,8 +122,8 @@
 			canCreateCustomer = false;
 			return;
 		}
-		// Scoped to this company (as DrawerOnline does): without the id this waits on a
-		// pending check that may belong to a company we are not looking at.
+		// Scoped to this company: without the id this waits on a pending check that may
+		// belong to a company we are not looking at.
 		await waitForDialogPermissionReady($currentCompany?.id);
 
 		// checkPermissionsEach never throws — it answers all-false on failure — so a

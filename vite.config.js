@@ -5,7 +5,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
 	server: {
 		host: '0.0.0.0',
-		allowedHosts: ['seller.sellsuki.local'],
+		allowedHosts: ['seller.sellsuki.local', '.ngrok-free.dev'],
 		// The design system is `file:`-linked to ../../sellsuki-components-upgrade while the
 		// 0.27.x beta is unpublished, so its dist resolves to real paths outside this root
 		// and Vite refuses to serve them without an explicit allowance.

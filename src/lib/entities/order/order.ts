@@ -332,3 +332,14 @@ export const sameDayDeliveries: DeliveryOption[] = [
 	{ label: 'MakeSend', value: 'makesend', icon: '/images/delivery/MakeSend.svg' },
 	{ label: 'Skootar', value: 'skootar', icon: '/images/delivery/Skootar.svg' }
 ];
+
+// Same Day only — which vehicle the courier dispatches. No matching backend field exists
+// yet (DeliveryGroup.vehicleType is frontend-only, see its own comment), so this stays a
+// cashier-facing detail until an API field lands for it.
+export const vehicleTypes: Option[] = [
+	{ label: 'ไม่ระบุ', value: 'unknown' },
+	{ label: 'มอเตอร์ไซค์', value: 'motorcycle' },
+	{ label: 'รถยนต์', value: 'car' },
+	{ label: 'รถกระบะ', value: 'pickup' },
+	{ label: 'รถบรรทุกเล็ก', value: 'smallTruck' }
+];

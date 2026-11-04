@@ -40,16 +40,7 @@ import {
 	hasSplitDelivery,
 	showDeliveryDetail,
 	resetDeliveryGroups,
-	addUserDeliveryGroup,
-	enableGroupOrder,
-	canRemoveDeliveryGroup,
-	removeUserDeliveryGroup,
-	restoreDeliveryGroup,
-	activeDeliveryGroupId,
-	setActiveDeliveryGroup,
-	updateDeliveryGroup,
-	moveItemToGroup,
-	groupOrderMode
+	updateDeliveryGroup
 } from '$stores/order/delivery-group';
 
 const physicalItem = (id: string, overrides: Partial<TCartItem> = {}): TCartItem => ({
@@ -185,7 +176,7 @@ describe('syncDeliveryGroups', () => {
 		expect(get(hasSplitDelivery)).toBe(false);
 	});
 
-	// Basic mode (the default — no enableGroupOrder) now locks EVERY present category
+	// Basic mode (the default — no multi-address mode) now locks EVERY present category
 	// group once more than one category exists, PickupInStore included — it reads as a
 	// handover pile (SplitReason.Receive) exactly like the รับบางส่วน handover group
 	// already does, rather than the old single "default, editable" bucket.
@@ -302,9 +293,9 @@ describe('syncDeliveryGroups', () => {
 	// can be split apart or combined freely by drag-and-drop, matching
 	// FULFILLMENT_LOGIC.md §2.4 (a service item forces its HOST group toward on-site, it
 	// does not forever own a group of its own).
-	// Basic mode locks both category groups the moment more than one is present —
-	// dragging items between them is an advanced-mode-only action now (see the
-	// enableGroupOrder-based version of the drag test below).
+	// Basic mode locks both category groups the moment more than one is present — a
+	// cashier can still move a line between kinds via its own lineFulfilment pick
+	// (resolveLineKind), never by dragging a parcel card around.
 	it('splits service + physical on a pickup sale into a locked OnSite group and a locked PickupInStore group', () => {
 		syncDeliveryGroups([serviceItem('s1'), physicalItem('p1')], {
 			fulfilmentType: FullfilmentType.PickupImmediate,
@@ -323,35 +314,6 @@ describe('syncDeliveryGroups', () => {
 
 		const pickup = groups.find((g) => g.kind === DeliveryGroupKind.PickupInStore);
 		expect(pickup?.itemIds).toEqual(['p1']);
-	});
-
-	// Dragging a line between category parcels is advanced-mode-only (basic mode's
-	// category groups are locked the moment more than one category exists) — entering
-	// group order first is what makes both groups cashier-reassignable soft splits.
-	it('keeps a service item exactly where the cashier drags it across a re-sync, instead of re-claiming it back into OnSite', () => {
-		const ctx = { fulfilmentType: FullfilmentType.PickupImmediate, isDelivery: false };
-		enableGroupOrder([serviceItem('s1'), physicalItem('p1')], ctx);
-		syncDeliveryGroups([serviceItem('s1'), physicalItem('p1')], ctx);
-
-		const onSiteGroupId = get(deliveryGroups).find((g) => g.kind === DeliveryGroupKind.OnSite)?.id;
-		const pickupGroupId = get(deliveryGroups).find(
-			(g) => g.kind === DeliveryGroupKind.PickupInStore
-		)?.id;
-		expect(onSiteGroupId).toBeDefined();
-		expect(pickupGroupId).toBeDefined();
-
-		// The cashier drags the service item out of its suggested OnSite bucket and into
-		// the ordinary pickup group, right beside the physical item.
-		moveItemToGroup('s1', pickupGroupId as string);
-
-		// An unrelated cart change (qty bump, another sync tick) must not undo that move.
-		syncDeliveryGroups([serviceItem('s1'), physicalItem('p1')], ctx);
-
-		const groups = get(deliveryGroups);
-		const onSiteAfter = groups.find((g) => g.id === onSiteGroupId);
-		const pickupAfter = groups.find((g) => g.id === pickupGroupId);
-		expect(onSiteAfter).toBeUndefined(); // emptied out, so it's gone — same as any other
-		expect(pickupAfter?.itemIds.sort()).toEqual(['p1', 's1']);
 	});
 
 	it('splits service + digital into Digital and OnSite groups — neither holding the other item', () => {
@@ -383,31 +345,6 @@ describe('syncDeliveryGroups', () => {
 		expect(groups[0].kind).toBe(DeliveryGroupKind.OnSite);
 		expect(groups[0].locked).toBe(false);
 		expect(groups[0].itemIds).toEqual(['s1']);
-	});
-
-	// The sale-level OnSite fulfilment choice (physicalKindFor) must build an OnSite
-	// default group even for perfectly ordinary physical items — the cashier picked this
-	// fulfilment for the WHOLE sale, not because any one line is flagged "service". Without
-	// the isOnSiteSale carve-out in the early-return guard, this cart (no digital/service
-	// item, ctx.isDelivery false) would build no groups at all and lose its address/fee.
-	// Basic mode's own line-fulfilment options never offer OnSite to a plain physical
-	// item (only a service line forces it — see lineFulfilmentOptions), so a sale-wide
-	// OnSite pick for ordinary physical items is advanced-mode-only now; enter it first.
-	it('builds an OnSite default group for ordinary physical items when the SALE fulfilment is OnSite', () => {
-		const ctx = {
-			fulfilmentType: FullfilmentType.OnSite,
-			isDelivery: false,
-			recipientName: 'คุณลูกค้า',
-			recipientAddress: '123 ถ.สุขุมวิท'
-		};
-		enableGroupOrder([physicalItem('p1'), physicalItem('p2')], ctx);
-		syncDeliveryGroups([physicalItem('p1'), physicalItem('p2')], ctx);
-
-		const groups = get(deliveryGroups);
-		const onSite = groups.find((g) => g.kind === DeliveryGroupKind.OnSite);
-		expect(onSite).toBeDefined();
-		expect(onSite?.itemIds.sort()).toEqual(['p1', 'p2']);
-		expect(onSite?.recipientAddress).toBe('123 ถ.สุขุมวิท');
 	});
 
 	it('picks up recipientAddress/recipientName from ctx on the auto-suggested OnSite group', () => {
@@ -490,87 +427,18 @@ describe('syncDeliveryGroups — VITE_DISABLE_MULTI_PARCEL', () => {
 	});
 });
 
-// Problem 3 — "+ แยกพัสดุเพิ่ม" used to build a parcel that syncDeliveryGroups (or
-// moveItemToGroup) immediately erased again for being empty, before the cashier had a
-// chance to move anything into it.
-describe('syncDeliveryGroups — user-made empty parcel survives a re-sync', () => {
-	beforeEach(() => {
-		resetDeliveryGroups();
-		isMultiParcelEnabledMock.mockReturnValue(true);
-	});
-
-	// "+ แยกพัสดุเพิ่ม" only exists in advanced (group-order) mode — basic mode has no
-	// cashier-made parcels at all, only its own fixed category buckets.
-	it('keeps an empty parcel the cashier just added after the next sync run', () => {
-		enableGroupOrder([physicalItem('p1'), physicalItem('p2')], {
-			fulfilmentType: FullfilmentType.ShopDelivery,
-			isDelivery: true,
-			recipientName: 'คุณลูกค้า',
-			recipientAddress: '123 ถ.สุขุมวิท'
-		});
-
-		const userGroupId = addUserDeliveryGroup();
-
-		// Re-run sync with the exact same cart — nothing has been moved into the new
-		// parcel yet, which is exactly the moment the old auto-collapse used to fire.
-		syncDeliveryGroups([physicalItem('p1'), physicalItem('p2')], {
-			fulfilmentType: FullfilmentType.ShopDelivery,
-			isDelivery: true,
-			recipientName: 'คุณลูกค้า',
-			recipientAddress: '123 ถ.สุขุมวิท'
-		});
-
-		const userGroup = get(deliveryGroups).find((g) => g.id === userGroupId);
-		expect(userGroup).toBeDefined();
-		expect(userGroup?.itemIds).toEqual([]);
-	});
-});
-
 // A pickup/pickup-later sale with no digital item builds no groups at all by default
-// (the zero-cost path, see "leaves the group list empty..." above) — enableGroupOrder is
-// the cashier's own opt-in past that, mirroring "สร้างคำสั่งขายกลุ่ม" in the reference
-// prototype for the two pickup fulfilments, not just ShopDelivery.
-describe('syncDeliveryGroups — enableGroupOrder on a pickup sale', () => {
+// (the zero-cost path, see "leaves the group list empty..." above).
+describe('syncDeliveryGroups — pickup sale without a digital item', () => {
 	beforeEach(() => {
 		resetDeliveryGroups();
 		isMultiParcelEnabledMock.mockReturnValue(true);
 	});
 
-	it('folds items already in the cart into their own promoted "group 1" immediately, not just on the next sync', () => {
-		syncDeliveryGroups([physicalItem('p1'), physicalItem('p2')], {
-			fulfilmentType: FullfilmentType.PickupImmediate,
-			isDelivery: false
-		});
-		expect(get(deliveryGroups)).toEqual([]); // not split yet — the zero-cost path
-
-		const newGroupId = enableGroupOrder(
-			[physicalItem('p1'), physicalItem('p2')],
-			{
-				fulfilmentType: FullfilmentType.PickupImmediate,
-				isDelivery: false
-			},
-			DeliveryGroupKind.PickupInStore
-		);
-
-		// No second syncDeliveryGroups call here — this must already be true right after
-		// enableGroupOrder returns, with no unrelated cart edit needed in between.
-		const groups = get(deliveryGroups);
-		expect(groups).toHaveLength(2);
-
-		const groupOne = groups.find((g) => g.id !== newGroupId);
-		expect(groupOne?.itemIds.sort()).toEqual(['p1', 'p2']);
-		expect(groupOne?.splitReason).toBe(SplitReason.User);
-		expect(groupOne?.locked).toBe(false);
-
-		const groupTwo = groups.find((g) => g.id === newGroupId);
-		expect(groupTwo?.itemIds).toEqual([]);
-		expect(groupTwo?.splitReason).toBe(SplitReason.User);
-	});
-
-	// Basic mode's own zero-cost collapse only fires for PickupInStore (รับทันที — nothing
-	// to track) — a PickupLater sale still needs its own single plain group so the branch
-	// the customer collects from (pickupStoreId) has somewhere to live.
-	it('without enableGroupOrder, a PickupLater sale with no digital item still builds its own single plain group', () => {
+	// A PickupLater sale still needs its own single plain group so the branch the
+	// customer collects from (pickupStoreId) has somewhere to live — unlike PickupInStore
+	// (รับทันที — nothing to track), which stays the zero-cost path.
+	it('a PickupLater sale with no digital item still builds its own single plain group', () => {
 		syncDeliveryGroups([physicalItem('p1')], {
 			fulfilmentType: FullfilmentType.PickupLater,
 			isDelivery: false,
@@ -583,194 +451,6 @@ describe('syncDeliveryGroups — enableGroupOrder on a pickup sale', () => {
 		expect(groups[0].locked).toBe(false);
 		expect(groups[0].splitReason).toBeUndefined();
 		expect(groups[0].pickupStoreId).toBe('store-1');
-	});
-
-	it('without enableGroupOrder, a PickupImmediate sale with no digital item still clears groups on sync — regression guard', () => {
-		syncDeliveryGroups([physicalItem('p1')], {
-			fulfilmentType: FullfilmentType.PickupImmediate,
-			isDelivery: false
-		});
-
-		expect(get(deliveryGroups)).toEqual([]);
-	});
-
-	it('keeps a manually-started split alive across a re-sync on a PickupImmediate sale', () => {
-		syncDeliveryGroups([physicalItem('p1'), physicalItem('p2')], {
-			fulfilmentType: FullfilmentType.PickupImmediate,
-			isDelivery: false
-		});
-		expect(get(deliveryGroups)).toEqual([]); // not split yet
-
-		enableGroupOrder(
-			[physicalItem('p1'), physicalItem('p2')],
-			{ fulfilmentType: FullfilmentType.PickupImmediate, isDelivery: false },
-			DeliveryGroupKind.PickupInStore
-		);
-
-		// An unrelated cart change (e.g. a qty bump) re-triggers sync exactly like
-		// Cart.svelte's own reactive call — the split must survive it.
-		syncDeliveryGroups([physicalItem('p1'), physicalItem('p2')], {
-			fulfilmentType: FullfilmentType.PickupImmediate,
-			isDelivery: false
-		});
-
-		const groups = get(deliveryGroups);
-		expect(groups.length).toBeGreaterThan(1);
-		expect(groups.every((g) => g.kind === DeliveryGroupKind.PickupInStore)).toBe(true);
-	});
-
-	it('keeps a manually-started split alive across a re-sync on a PickupLater sale', () => {
-		syncDeliveryGroups([physicalItem('p1')], {
-			fulfilmentType: FullfilmentType.PickupLater,
-			isDelivery: false
-		});
-		enableGroupOrder(
-			[physicalItem('p1')],
-			{ fulfilmentType: FullfilmentType.PickupLater, isDelivery: false },
-			DeliveryGroupKind.PickupLater
-		);
-		syncDeliveryGroups([physicalItem('p1')], {
-			fulfilmentType: FullfilmentType.PickupLater,
-			isDelivery: false
-		});
-
-		expect(get(deliveryGroups).length).toBeGreaterThan(1);
-	});
-
-	it('does not leak groupOrderActive forward once removal collapses back to a single group', () => {
-		syncDeliveryGroups([physicalItem('p1')], {
-			fulfilmentType: FullfilmentType.PickupImmediate,
-			isDelivery: false
-		});
-		const userGroupId = enableGroupOrder(
-			[physicalItem('p1')],
-			{ fulfilmentType: FullfilmentType.PickupImmediate, isDelivery: false },
-			DeliveryGroupKind.PickupInStore
-		);
-		syncDeliveryGroups([physicalItem('p1')], {
-			fulfilmentType: FullfilmentType.PickupImmediate,
-			isDelivery: false
-		});
-		expect(get(deliveryGroups).length).toBeGreaterThan(1);
-
-		removeUserDeliveryGroup(userGroupId);
-		expect(get(deliveryGroups)).toHaveLength(1);
-
-		// A later, unrelated pickup sale (same session state) must not inherit a stale
-		// "stay split" flag from the sale that just finished.
-		syncDeliveryGroups([physicalItem('p3')], {
-			fulfilmentType: FullfilmentType.PickupImmediate,
-			isDelivery: false
-		});
-		expect(get(deliveryGroups)).toEqual([]);
-	});
-});
-
-// Problem 3 (continued) — the new parcel must match how the rest of the sale is being
-// collected, and must never be created as Digital (that split is the engine's, not the
-// cashier's).
-describe('addUserDeliveryGroup kind', () => {
-	beforeEach(() => {
-		resetDeliveryGroups();
-	});
-
-	it('creates a parcel of the requested kind', () => {
-		const id = addUserDeliveryGroup(DeliveryGroupKind.PickupInStore);
-		expect(get(deliveryGroups).find((g) => g.id === id)?.kind).toBe(
-			DeliveryGroupKind.PickupInStore
-		);
-	});
-
-	it('falls back to Shipping when asked for Digital — a digital parcel is a hard split, never a cashier one', () => {
-		const id = addUserDeliveryGroup(DeliveryGroupKind.Digital);
-		expect(get(deliveryGroups).find((g) => g.id === id)?.kind).toBe(DeliveryGroupKind.Shipping);
-	});
-});
-
-describe('removeUserDeliveryGroup / restoreDeliveryGroup', () => {
-	beforeEach(() => {
-		resetDeliveryGroups();
-	});
-
-	it('removes an empty user group outright — nothing to relocate', () => {
-		const userGroupId = addUserDeliveryGroup();
-
-		expect(canRemoveDeliveryGroup(get(deliveryGroups), userGroupId)).toBe(true);
-
-		const removed = removeUserDeliveryGroup(userGroupId);
-
-		expect(removed?.group.id).toBe(userGroupId);
-		expect(removed?.targetGroupId).toBeUndefined();
-		expect(get(deliveryGroups)).toHaveLength(0);
-	});
-
-	it('merges a user group holding items into the default group and returns its id', () => {
-		const defaultGroup = newDeliveryGroup({ itemIds: ['p1'] });
-		const userGroup = newDeliveryGroup({
-			splitReason: SplitReason.User,
-			locked: false,
-			itemIds: ['p2']
-		});
-		deliveryGroups.set([defaultGroup, userGroup]);
-
-		expect(canRemoveDeliveryGroup(get(deliveryGroups), userGroup.id)).toBe(true);
-
-		const removed = removeUserDeliveryGroup(userGroup.id);
-
-		expect(removed?.targetGroupId).toBe(defaultGroup.id);
-		const groups = get(deliveryGroups);
-		expect(groups).toHaveLength(1);
-		expect(groups[0].id).toBe(defaultGroup.id);
-		expect([...groups[0].itemIds].sort()).toEqual(['p1', 'p2']);
-	});
-
-	it('refuses to remove a locked group — the store is left unchanged', () => {
-		const locked = newDeliveryGroup({
-			splitReason: SplitReason.Origin,
-			locked: true,
-			itemIds: ['p1']
-		});
-		deliveryGroups.set([locked]);
-
-		expect(canRemoveDeliveryGroup(get(deliveryGroups), locked.id)).toBe(false);
-		expect(removeUserDeliveryGroup(locked.id)).toBeUndefined();
-		expect(get(deliveryGroups)).toEqual([locked]);
-	});
-
-	it('refuses to remove the default group — the store is left unchanged', () => {
-		const defaultGroup = newDeliveryGroup({ itemIds: ['p1'] });
-		deliveryGroups.set([defaultGroup]);
-
-		expect(canRemoveDeliveryGroup(get(deliveryGroups), defaultGroup.id)).toBe(false);
-		expect(removeUserDeliveryGroup(defaultGroup.id)).toBeUndefined();
-		expect(get(deliveryGroups)).toEqual([defaultGroup]);
-	});
-
-	it('restores a removed group at its original index and takes its items back off the receiver', () => {
-		const defaultGroup = newDeliveryGroup({ itemIds: ['p1'] });
-		const userGroup = newDeliveryGroup({
-			splitReason: SplitReason.User,
-			locked: false,
-			itemIds: ['p2']
-		});
-		const another = newDeliveryGroup({
-			splitReason: SplitReason.User,
-			locked: false,
-			itemIds: ['p3']
-		});
-		deliveryGroups.set([defaultGroup, userGroup, another]);
-
-		const removed = removeUserDeliveryGroup(userGroup.id);
-		expect(removed).toBeDefined();
-		// Confirm the merge actually happened before restoring it.
-		expect(get(deliveryGroups).find((g) => g.id === defaultGroup.id)?.itemIds).toContain('p2');
-
-		restoreDeliveryGroup(removed!);
-
-		const groups = get(deliveryGroups);
-		expect(groups.map((g) => g.id)).toEqual([defaultGroup.id, userGroup.id, another.id]);
-		expect(groups.find((g) => g.id === userGroup.id)?.itemIds).toEqual(['p2']);
-		expect(groups.find((g) => g.id === defaultGroup.id)?.itemIds).toEqual(['p1']);
 	});
 });
 
@@ -910,66 +590,32 @@ describe('partial receive (รับบางส่วน)', () => {
 		expect(summary.handoverGroup?.splitReason).toBe(SplitReason.Receive);
 	});
 
-	// Regression — a sale manually split into a pickup-now group, a pickup-later group,
-	// and ONE real Shipping parcel used to read as "ค่าจัดส่ง (3 พัสดุ) ยังไม่ครบ" even
-	// when that one real parcel already had its courier/fee fully set: feeUnknown checked
-	// EVERY group's shippingFee for undefined, and a pickup group's is always undefined
-	// (never asked for one), not actually missing anything.
+	// Regression — a sale split into a pickup-now line, a pickup-later line, and ONE real
+	// Shipping line used to read as "ค่าจัดส่ง (3 พัสดุ) ยังไม่ครบ" even when that one real
+	// parcel already had its courier/fee fully set: feeUnknown checked EVERY group's
+	// shippingFee for undefined, and a pickup group's is always undefined (never asked
+	// for one), not actually missing anything.
 	it('feeUnknown only looks at groups that actually need a fee, not pickup groups sitting beside them', () => {
-		// A real Shipping default group to start from (ShopDelivery), holding all three
-		// items — then two of them are dragged out into plain pickup groups, leaving the
-		// default group as the one-and-only Shipping parcel.
-		syncDeliveryGroups([physicalItem('p1'), physicalItem('p2'), physicalItem('p3')], {
-			fulfilmentType: FullfilmentType.ShopDelivery,
-			isDelivery: true,
-			recipientName: 'คุณลูกค้า',
-			recipientAddress: '123 ถ.สุขุมวิท'
-		});
-		const shippingGroup = get(deliveryGroups)[0];
-
-		const pickupNowId = addUserDeliveryGroup(DeliveryGroupKind.PickupInStore);
-		const pickupLaterId = addUserDeliveryGroup(DeliveryGroupKind.PickupLater);
-		moveItemToGroup('p1', pickupNowId);
-		moveItemToGroup('p2', pickupLaterId);
+		syncDeliveryGroups(
+			[
+				physicalItem('p1', { lineFulfilment: DeliveryGroupKind.PickupInStore }),
+				physicalItem('p2', { lineFulfilment: DeliveryGroupKind.PickupLater }),
+				physicalItem('p3')
+			],
+			{
+				fulfilmentType: FullfilmentType.ShopDelivery,
+				isDelivery: true,
+				channel: 'pos',
+				recipientName: 'คุณลูกค้า',
+				recipientAddress: '123 ถ.สุขุมวิท'
+			}
+		);
+		const shippingGroup = get(deliveryGroups).find((g) => g.kind === DeliveryGroupKind.Shipping)!;
 		updateDeliveryGroup(shippingGroup.id, { method: 'kex', shippingFee: 100 });
 
 		const summary = get(deliverySummary);
 		expect(summary.shippingCount).toBe(1);
 		expect(summary.feeUnknown).toBe(false);
-	});
-
-	// Origin-aware blocking (canReceiveNow) only exists in the advanced engine — basic
-	// mode's own legacy-receiveMode fallback (resolveLineKind) has no origin concept at
-	// all (basic mode never splits by origin, period), so this now needs group order mode.
-	it('blocks a "now" item from a foreign origin — it ships instead of joining the handover group', () => {
-		const items = [
-			physicalItem('p1', {
-				receiveMode: ReceiveMode.Now,
-				originId: 'origin-b',
-				originName: 'คลัง B'
-			}),
-			physicalItem('p2')
-		];
-		const ctx = {
-			fulfilmentType: FullfilmentType.ShopDelivery,
-			isDelivery: true,
-			allowPartialReceive: true,
-			sellingOriginId: 'origin-a',
-			recipientName: 'คุณลูกค้า',
-			recipientAddress: '123 ถ.สุขุมวิท'
-		};
-		enableGroupOrder(items, ctx);
-		syncDeliveryGroups(items, ctx);
-
-		const groups = get(deliveryGroups);
-		expect(groups.some((g) => g.splitReason === SplitReason.Receive)).toBe(false);
-		// p1 falls through to the ordinary Shipping group instead — the ▲ toggle would
-		// already have been disabled for it, so this is stale state, and shipping is safe.
-		// enableGroupOrder also appends its own empty user parcel — only the group that
-		// actually holds the items is under test here.
-		const shipping = groups.find((g) => g.itemIds.length > 0);
-		expect(shipping?.kind).toBe(DeliveryGroupKind.Shipping);
-		expect([...(shipping?.itemIds ?? [])].sort()).toEqual(['p1', 'p2']);
 	});
 });
 
@@ -1004,102 +650,6 @@ describe('receiveNowBlockReason', () => {
 	});
 });
 
-// "Shop into this parcel" — prototype's activeGroupId. A product tapped while a
-// cashier-made parcel is active lands in it; everything the engine owns still wins.
-// "Shop into this parcel" (activeDeliveryGroupId) only means anything once a cashier has
-// their own named parcels to shop into — i.e. advanced (group-order) mode. Basic mode has
-// no such concept: its category groups are system-built, never a destination a tapped
-// product gets routed into. Every test below enters group order first.
-describe('active delivery group', () => {
-	const ctx = {
-		fulfilmentType: FullfilmentType.ShopDelivery,
-		isDelivery: true,
-		recipientName: 'คุณลูกค้า',
-		recipientAddress: '123 ถ.สุขุมวิท'
-	};
-
-	beforeEach(() => {
-		resetDeliveryGroups();
-		isMultiParcelEnabledMock.mockReturnValue(true);
-	});
-
-	const groupOf = (itemId: string) => get(deliveryGroups).find((g) => g.itemIds.includes(itemId));
-
-	it('puts a newly added line into the active user parcel instead of the default one', () => {
-		enableGroupOrder([physicalItem('p1')], ctx);
-		const userId = addUserDeliveryGroup();
-		setActiveDeliveryGroup(userId);
-
-		syncDeliveryGroups([physicalItem('p1'), physicalItem('p2')], ctx);
-
-		expect(groupOf('p2')?.id).toBe(userId);
-		expect(groupOf('p1')?.id).not.toBe(userId);
-	});
-
-	it('leaves a line that already had a parcel where it is (qty bump is not a new line)', () => {
-		enableGroupOrder([physicalItem('p1')], ctx);
-		const userId = addUserDeliveryGroup();
-		setActiveDeliveryGroup(userId);
-
-		syncDeliveryGroups([physicalItem('p1', { qty: 3 })], ctx);
-
-		expect(groupOf('p1')?.id).not.toBe(userId);
-	});
-
-	it('with nothing active, new lines keep going to the default parcel', () => {
-		enableGroupOrder([physicalItem('p1')], ctx);
-		const userId = addUserDeliveryGroup();
-
-		syncDeliveryGroups([physicalItem('p1'), physicalItem('p2')], ctx);
-
-		expect(groupOf('p2')?.id).not.toBe(userId);
-	});
-
-	it('never lets a digital line into the active parcel — the hard split still wins', () => {
-		enableGroupOrder([physicalItem('p1')], ctx);
-		const userId = addUserDeliveryGroup();
-		setActiveDeliveryGroup(userId);
-
-		syncDeliveryGroups([physicalItem('p1'), digitalItem('d1')], ctx);
-
-		expect(groupOf('d1')?.kind).toBe(DeliveryGroupKind.Digital);
-		expect(groupOf('d1')?.id).not.toBe(userId);
-	});
-
-	// Pure predicate test — constructs the groups directly rather than via sync, since a
-	// "locked hard split sitting beside an untouched default group" is just a shape, not
-	// something either basic or advanced mode's engine necessarily produces on its own.
-	it('refuses to activate a locked or default parcel', () => {
-		const digital = newDeliveryGroup({
-			kind: DeliveryGroupKind.Digital,
-			locked: true,
-			splitReason: SplitReason.Product
-		});
-		const normal = newDeliveryGroup({ locked: false });
-		deliveryGroups.set([digital, normal]);
-
-		setActiveDeliveryGroup(digital.id);
-		expect(get(activeDeliveryGroupId)).toBeUndefined();
-		setActiveDeliveryGroup(normal.id);
-		expect(get(activeDeliveryGroupId)).toBeUndefined();
-	});
-
-	it('clears itself when the active parcel is removed or the cart empties', () => {
-		syncDeliveryGroups([physicalItem('p1')], ctx);
-		const userId = addUserDeliveryGroup();
-		setActiveDeliveryGroup(userId);
-		expect(get(activeDeliveryGroupId)).toBe(userId);
-
-		removeUserDeliveryGroup(userId);
-		expect(get(activeDeliveryGroupId)).toBeUndefined();
-
-		const again = addUserDeliveryGroup();
-		setActiveDeliveryGroup(again);
-		syncDeliveryGroups([], ctx);
-		expect(get(activeDeliveryGroupId)).toBeUndefined();
-	});
-});
-
 // Each sale-order-group card now independently picks its own kind — only a cashier-made
 // (soft-split, SplitReason.User) group is theirs to reassign; the two real hard splits
 // (Digital, the "รับบางส่วน" handover pile) stay engine-owned, never manually assignable.
@@ -1128,35 +678,6 @@ describe('canChangeGroupKind', () => {
 	});
 });
 
-describe('updateDeliveryGroup kind change survives a re-sync', () => {
-	beforeEach(() => {
-		resetDeliveryGroups();
-		isMultiParcelEnabledMock.mockReturnValue(true);
-	});
-
-	// Soft-split groups keeping a manually-changed kind across a re-sync (step 3 of the
-	// advanced engine) is advanced-mode-only — basic mode's syncBasicGroups rebuilds its
-	// category groups from scratch every time, with no concept of a cashier override.
-	it('keeps a user group on the kind it was switched to across the next sync', () => {
-		const ctx = {
-			fulfilmentType: FullfilmentType.ShopDelivery,
-			isDelivery: true,
-			recipientName: 'คุณลูกค้า',
-			recipientAddress: '123 ถ.สุขุมวิท'
-		};
-		enableGroupOrder([physicalItem('p1')], ctx);
-		const userId = addUserDeliveryGroup(DeliveryGroupKind.Shipping);
-
-		updateDeliveryGroup(userId, { kind: DeliveryGroupKind.OnSite, shippingFee: 150 });
-
-		syncDeliveryGroups([physicalItem('p1')], ctx);
-
-		const userGroup = get(deliveryGroups).find((g) => g.id === userId);
-		expect(userGroup?.kind).toBe(DeliveryGroupKind.OnSite);
-		expect(userGroup?.shippingFee).toBe(150);
-	});
-});
-
 describe('groupKindLabel wording', () => {
 	it('matches the mockup text for all 5 kinds', () => {
 		expect(groupKindLabel(DeliveryGroupKind.PickupInStore)).toBe('รับทันที');
@@ -1172,10 +693,11 @@ describe('groupKindLabel wording', () => {
 // ---------------------------------------------------------------------------------------
 
 describe('isMarketplaceChannel', () => {
-	it('treats shopee, lazada and tiktok as marketplace sub-channels', () => {
+	it('treats shopee, lazada, tiktok and lineShopping as marketplace sub-channels', () => {
 		expect(isMarketplaceChannel('shopee')).toBe(true);
 		expect(isMarketplaceChannel('lazada')).toBe(true);
 		expect(isMarketplaceChannel('tiktok')).toBe(true);
+		expect(isMarketplaceChannel('lineShopping')).toBe(true);
 	});
 
 	it('treats everything else, including undefined, as not a marketplace', () => {
@@ -1203,10 +725,13 @@ describe('lineFulfilmentOptions', () => {
 		).toEqual([DeliveryGroupKind.Shipping]);
 	});
 
-	it('gives an online/link-bill physical line Shipping or PickupLater — no counter to hand it over at', () => {
+	it('gives an online physical line exactly one option: Shipping — online is shipping-only, no per-line picker', () => {
 		expect(
 			lineFulfilmentOptions({ fulfilmentType: ItemFulfilmentType.Physical }, { channel: 'online', marketplace: false })
-		).toEqual([DeliveryGroupKind.Shipping, DeliveryGroupKind.PickupLater]);
+		).toEqual([DeliveryGroupKind.Shipping]);
+	});
+
+	it('gives a link-bill physical line Shipping or PickupLater — no counter to hand it over at', () => {
 		expect(
 			lineFulfilmentOptions({ fulfilmentType: ItemFulfilmentType.Physical }, { channel: 'linkbill', marketplace: false })
 		).toEqual([DeliveryGroupKind.Shipping, DeliveryGroupKind.PickupLater]);
@@ -1436,7 +961,7 @@ describe('basic mode — fulfilment-grouping scenarios', () => {
 		);
 	});
 
-	it('B8 — online marketplace (shopee): single Shipping group, courier = platform, method "platform", shippingFee 0, every physical line forced to Shipping', () => {
+	it('B8 — online marketplace (shopee): single Shipping group, courier = platform, method "platform", fee left for the merchant to set, every physical line forced to Shipping', () => {
 		syncDeliveryGroups(
 			[
 				physicalItem('item-1', { lineFulfilment: DeliveryGroupKind.PickupLater }),
@@ -1458,72 +983,152 @@ describe('basic mode — fulfilment-grouping scenarios', () => {
 		expect(shipping.kind).toBe(DeliveryGroupKind.Shipping);
 		expect(shipping.courier).toBe('shopee');
 		expect(shipping.method).toBe('platform');
-		expect(shipping.shippingFee).toBe(0);
+		// Courier/method are locked to the platform, but the fee is still the merchant's own
+		// to set (same field as any other shipping group) — it starts unset, not a stamped 0
+		// that would silently overwrite whatever the merchant types in on every re-sync.
+		expect(shipping.shippingFee).toBeUndefined();
 		expect(shipping.itemIds.sort()).toEqual(['item-1', 'item-2']);
 
+		// feeUnknown is deliberately always false now — a fee the merchant hasn't set yet is
+		// ฿0 until they say otherwise, not a blocking "unknown" state (see
+		// isGroupFulfilmentComplete's own comment); the unset shippingFee itself (asserted
+		// above) is still the real, un-stamped value this test is actually about.
 		const summary = get(deliverySummary);
 		expect(summary.feeUnknown).toBe(false);
 	});
+
+	it('B8b — a merchant-set fee on a marketplace Shipping group survives a re-sync', () => {
+		syncDeliveryGroups([physicalItem('item-1')], {
+			fulfilmentType: FullfilmentType.ShopDelivery,
+			isDelivery: true,
+			channel: 'online',
+			subChannel: 'shopee',
+			recipientName: 'คุณลูกค้า',
+			recipientAddress: '123 ถ.สุขุมวิท'
+		});
+
+		const shippingId = get(deliveryGroups)[0].id;
+		updateDeliveryGroup(shippingId, { shippingFee: 50 });
+
+		// Any cart/context change re-runs the sync — a courier-locked marketplace group must
+		// not have its merchant-entered fee clobbered back to a default on the next pass.
+		syncDeliveryGroups([physicalItem('item-1'), physicalItem('item-2')], {
+			fulfilmentType: FullfilmentType.ShopDelivery,
+			isDelivery: true,
+			channel: 'online',
+			subChannel: 'shopee',
+			recipientName: 'คุณลูกค้า',
+			recipientAddress: '123 ถ.สุขุมวิท'
+		});
+
+		const shipping = get(deliveryGroups).find((g) => g.kind === DeliveryGroupKind.Shipping);
+		expect(shipping?.shippingFee).toBe(50);
+	});
+
+	it('B8c — switching an online sale off a marketplace sub-channel clears the stale platform courier/method/fee', () => {
+		syncDeliveryGroups([physicalItem('item-1')], {
+			fulfilmentType: FullfilmentType.ShopDelivery,
+			isDelivery: true,
+			channel: 'online',
+			subChannel: 'shopee',
+			recipientName: 'คุณลูกค้า',
+			recipientAddress: '123 ถ.สุขุมวิท'
+		});
+
+		const shippingId = get(deliveryGroups)[0].id;
+		updateDeliveryGroup(shippingId, { shippingFee: 50 });
+
+		// The cashier switches the sub-channel back to an ordinary one (not one of the 4
+		// locked marketplaces) — the group must stop looking marketplace-locked: no stale
+		// 'platform' method, no leftover 'shopee' courier, no leftover fee from a courier
+		// the merchant never actually chose for this channel.
+		syncDeliveryGroups([physicalItem('item-1')], {
+			fulfilmentType: FullfilmentType.ShopDelivery,
+			isDelivery: true,
+			channel: 'online',
+			subChannel: 'line',
+			recipientName: 'คุณลูกค้า',
+			recipientAddress: '123 ถ.สุขุมวิท'
+		});
+
+		const shipping = get(deliveryGroups).find((g) => g.kind === DeliveryGroupKind.Shipping);
+		expect(shipping?.method).not.toBe('platform');
+		expect(shipping?.courier).toBeUndefined();
+		expect(shipping?.shippingFee).toBeUndefined();
+	});
 });
 
-// Entering advanced (group-order) mode from basic must keep whatever category buckets
-// basic mode already built as the starting, cashier-reassignable (soft-split) groups —
-// not discard them in favour of a single re-merged default. Digital stays a hard split
-// even once the cashier is in group-order mode.
-describe('enableGroupOrder — entering group order from basic', () => {
+// "เพิ่มตัวเลือกรับสินค้า" → a SECOND "จัดส่งจากหน้าร้าน" pile, its own address — replaces
+// the old "จัดส่งหลายที่อยู่" engine. A line's `lineAddressId` says which Shipping pile's
+// address it belongs to (undefined = the sale's own default address), mirroring how
+// `linePickupStoreId` already fans PickupLater out into one group per branch.
+describe('basic mode — Shipping fans out by address, same shape as PickupLater by branch', () => {
 	beforeEach(() => {
 		resetDeliveryGroups();
 		isMultiParcelEnabledMock.mockReturnValue(true);
 	});
 
-	it('promotes basic mode buckets to User groups instead of re-merging them', () => {
-		const items = [
-			physicalItem('coffee'),
-			physicalItem('machine', { lineFulfilment: DeliveryGroupKind.Shipping })
-		];
-		const ctx = {
-			fulfilmentType: FullfilmentType.PickupImmediate,
-			isDelivery: false,
-			channel: 'pos' as const,
-			recipientName: 'คุณลูกค้า',
-			recipientAddress: '123 ถ.สุขุมวิท'
-		};
+	const ctx = {
+		fulfilmentType: FullfilmentType.ShopDelivery,
+		isDelivery: true,
+		channel: 'pos' as const,
+		recipientName: 'คุณลูกค้า',
+		recipientAddress: '123 ถ.สุขุมวิท',
+		recipientAddressId: 'addr-default',
+		shippingAddresses: [{ addressId: 'addr-2', recipientName: 'คุณลูกค้า2', recipientAddress: '456 ถ.พระราม 4' }]
+	};
 
-		syncDeliveryGroups(items, ctx);
-		const basicGroups = get(deliveryGroups);
-		expect(basicGroups).toHaveLength(2); // B3 shape — PickupInStore + Shipping, both locked
-
-		expect(get(groupOrderMode)).toBe(false);
-		const newGroupId = enableGroupOrder(items, ctx);
-		expect(get(groupOrderMode)).toBe(true);
+	it('a single Shipping address still reads as the plain, unsplit default (no "· address" suffix anywhere, locked stays false)', () => {
+		syncDeliveryGroups([physicalItem('item-1')], ctx);
 
 		const groups = get(deliveryGroups);
-		// The two basic buckets survive as unlocked User groups, plus the new empty one.
-		expect(groups).toHaveLength(3);
-		const pickupInStore = groups.find((g) => g.kind === DeliveryGroupKind.PickupInStore);
-		const shipping = groups.find((g) => g.kind === DeliveryGroupKind.Shipping && g.id !== newGroupId);
-		expect(pickupInStore?.splitReason).toBe(SplitReason.User);
-		expect(pickupInStore?.locked).toBe(false);
-		expect(pickupInStore?.itemIds).toEqual(['coffee']);
-		expect(shipping?.splitReason).toBe(SplitReason.User);
-		expect(shipping?.locked).toBe(false);
-		expect(shipping?.itemIds).toEqual(['machine']);
+		expect(groups).toHaveLength(1);
+		expect(groups[0].kind).toBe(DeliveryGroupKind.Shipping);
+		expect(groups[0].locked).toBe(false);
+		expect(groups[0].splitReason).toBeUndefined();
+		expect(groups[0].addressGroupSeq).toBe(1);
+		expect(groups[0].recipientAddress).toBe('123 ถ.สุขุมวิท');
 	});
 
-	it('leaves a Digital bucket as its own hard split rather than promoting it to User', () => {
-		const items = [physicalItem('p1'), digitalItem('d1')];
-		const ctx = {
-			fulfilmentType: FullfilmentType.PickupImmediate,
-			isDelivery: false,
-			channel: 'pos' as const,
-			recipientEmail: 'buyer@example.com'
-		};
+	it('a second Shipping pile (lineAddressId set) becomes its own group with its own address, independent of the default', () => {
+		syncDeliveryGroups(
+			[physicalItem('item-1'), physicalItem('item-2', { lineAddressId: 'addr-2' })],
+			ctx
+		);
 
-		syncDeliveryGroups(items, ctx);
-		enableGroupOrder(items, ctx);
+		const groups = get(deliveryGroups).filter((g) => g.kind === DeliveryGroupKind.Shipping);
+		expect(groups).toHaveLength(2);
+		const defaultGroup = groups.find((g) => g.itemIds.includes('item-1'));
+		const extraGroup = groups.find((g) => g.itemIds.includes('item-2'));
+		expect(defaultGroup?.recipientAddress).toBe('123 ถ.สุขุมวิท');
+		expect(extraGroup?.recipientAddress).toBe('456 ถ.พระราม 4');
+		expect(extraGroup?.recipientAddressId).toBe('addr-2');
+		// Every Shipping group other than the default is a cashier-made pile — soft, never
+		// a system-locked hard split.
+		expect(extraGroup?.locked).toBe(false);
+		expect(extraGroup?.splitReason).toBe(SplitReason.User);
+	});
 
-		const digital = get(deliveryGroups).find((g) => g.kind === DeliveryGroupKind.Digital);
-		expect(digital?.locked).toBe(true);
-		expect(digital?.splitReason).toBe(SplitReason.Product);
+	it("a second pile's own courier/method/fee survive a re-sync (matched by recipientAddressId, not array position)", () => {
+		syncDeliveryGroups(
+			[physicalItem('item-1'), physicalItem('item-2', { lineAddressId: 'addr-2' })],
+			ctx
+		);
+		const extraId = get(deliveryGroups).find((g) => g.recipientAddressId === 'addr-2')!.id;
+		updateDeliveryGroup(extraId, { method: 'kerry', shippingFee: 40 });
+
+		syncDeliveryGroups(
+			[
+				physicalItem('item-1'),
+				physicalItem('item-2', { lineAddressId: 'addr-2' }),
+				physicalItem('item-3', { lineAddressId: 'addr-2' })
+			],
+			ctx
+		);
+
+		const extraGroup = get(deliveryGroups).find((g) => g.recipientAddressId === 'addr-2');
+		expect(extraGroup?.method).toBe('kerry');
+		expect(extraGroup?.shippingFee).toBe(40);
+		expect(extraGroup?.itemIds.sort()).toEqual(['item-2', 'item-3']);
 	});
 });

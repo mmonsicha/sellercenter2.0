@@ -2,8 +2,63 @@ import { getItem, localStorageKey } from '$utils/local-storage';
 import { writable, get } from 'svelte/store';
 import type { TCartListInfo, TCartItem, TCartOptions, discountType } from '.';
 import { configurationStore } from '$stores/configuration';
-import { ReceiveMode } from '$lib/entities/order/delivery-group';
-import { activeDeliveryGroupId, deliveryGroups } from '$stores/order/delivery-group';
+import {
+	DeliveryGroupKind,
+	ItemFulfilmentType,
+	ReceiveMode,
+	itemFulfilmentOf
+} from '$lib/entities/order/delivery-group';
+
+export interface OpenFulfilmentPile {
+	kind: string;
+	/** PickupLater only — which branch this particular pile collects for. */
+	pickupStoreId?: string;
+	/** Shipping only — which customer address this particular pile ships to. undefined is
+	 *  the sale's own default address; a second (third, ...) "จัดส่งจากหน้าร้าน" pile the
+	 *  cashier opens via "เพิ่มตัวเลือกรับสินค้า" carries its own, distinct address id here. */
+	addressId?: string;
+}
+
+function samePile(a: OpenFulfilmentPile, b: OpenFulfilmentPile): boolean {
+	return (
+		a.kind === b.kind && a.pickupStoreId === b.pickupStoreId && (a.addressId ?? '') === (b.addressId ?? '')
+	);
+}
+
+// "เพิ่มตัวเลือกรับสินค้า" — a pile the cashier opened but hasn't (yet, or ever) put
+// anything in. Cart items alone can't represent an empty pile (there's nothing to bucket
+// by), so this is the registry CartFulfilmentPiles reads to still render its section —
+// the cashier drags existing lines into it from there (see CartItem's drag & drop). Purely
+// a display aid: a pile with items in it already renders from the items themselves and
+// doesn't need an entry here (though one surviving alongside is harmless — buckets dedupe
+// by kind/pickupStoreId).
+export const openFulfilmentPiles = writable<OpenFulfilmentPile[]>([]);
+
+export function addOpenFulfilmentPile(pile: OpenFulfilmentPile): void {
+	openFulfilmentPiles.update((piles) =>
+		piles.some((p) => samePile(p, pile)) ? piles : [...piles, pile]
+	);
+}
+
+export function removeOpenFulfilmentPile(pile: OpenFulfilmentPile): void {
+	openFulfilmentPiles.update((piles) => piles.filter((p) => !samePile(p, pile)));
+	// A closed pile can't stay the tap target — otherwise the next product tapped from the
+	// catalog would silently build a line for a pile that no longer has a section to show it in.
+	activeFulfilmentPile.update((active) => (active && samePile(active, pile) ? undefined : active));
+}
+
+// Which pile a freshly-tapped product lands in — undefined means the ordinary, no-override
+// line (today's default behaviour). Without this, re-tapping a product already in the
+// cart always created ANOTHER plain default line (findMergeTarget skips any line that
+// already has an override), so the only way to put more of it into a just-opened pile was
+// to drag the new line there by hand. Cart.svelte sets this whenever a pile is opened or
+// its section is clicked, and shows which one is active so the cashier isn't guessing
+// where the next tap goes.
+export const activeFulfilmentPile = writable<OpenFulfilmentPile | undefined>(undefined);
+
+export function setActiveFulfilmentPile(pile: OpenFulfilmentPile | undefined): void {
+	activeFulfilmentPile.set(pile);
+}
 
 export const cartListInfo = writable<TCartListInfo>({
 	data: [],
@@ -65,25 +120,22 @@ export function GetExistingCart(): TCartItem[] {
 	return localCart;
 }
 
-// Which existing line (if any) a freshly tapped product should merge into. Outside
-// group-order mode (no active parcel) this is the plain old rule: any line of the same
-// product_id, wherever it sits — one line per product, qty bumped on re-add. The moment
-// a parcel is ACTIVE (the cashier is shopping into a specific group — see
-// activeDeliveryGroupId), "the same product" only means "the same line" if that line is
-// already a member of THAT active parcel. A line of the same product sitting in a
-// DIFFERENT parcel must stay separate — tapping the product again means "put another one
-// in THIS parcel", not "bump the one sitting over there" (which is what produced two
-// visually-identical rows in the same parcel instead of one row at qty 2 — the active
-// parcel's own existing line must still win the merge).
+// Which existing line (if any) a freshly tapped product should merge into. A tapped
+// product must stay separate from a line sitting in a DIFFERENT fulfilment pile than the
+// active one (see activeFulfilmentPile) — the whole point of "เพิ่มตัวเลือกรับสินค้า" is
+// that the SAME product can sit in two piles at once with its own qty each (เสื้อ รับทันที
+// 2 + เสื้อ จัดส่งจากหน้าร้าน 10). No active pile means "the ordinary, non-overridden
+// line", matching every line added before piles existed at all.
 function findMergeTarget(productId: string, localCart: TCartItem[]): TCartItem | undefined {
-	const activeId = get(activeDeliveryGroupId);
-	if (!activeId) {
-		return localCart.find((c) => c.product_id === productId);
-	}
-	const activeGroupItemIds = new Set(get(deliveryGroups).find((g) => g.id === activeId)?.itemIds ?? []);
-	return localCart.find(
-		(c) => c.product_id === productId && !!c.lineId && activeGroupItemIds.has(c.lineId)
-	);
+	const pile = get(activeFulfilmentPile);
+	return localCart.find((c) => {
+		if (c.product_id !== productId) return false;
+		if (!pile) return !c.lineFulfilment;
+		if (c.lineFulfilment !== pile.kind) return false;
+		if (pile.kind === DeliveryGroupKind.PickupLater) return c.linePickupStoreId === pile.pickupStoreId;
+		if (pile.kind === DeliveryGroupKind.Shipping) return (c.lineAddressId ?? '') === (pile.addressId ?? '');
+		return true;
+	});
 }
 
 export function AddCartItem(cart: TCartItem) {
@@ -109,7 +161,30 @@ export function AddCartItem(cart: TCartItem) {
 		UpdateCartItemQty(existingItem.lineId!, maxQty);
 		return;
 	}
-	localCart.push({ ...cart, lineId: cart.lineId ?? newLineId() });
+
+	const pile = get(activeFulfilmentPile);
+	// ให้บริการนอกสถานที่ only ever accepts a service item (see resolveLineKind/
+	// lineFulfilmentOptions, which never offer OnSite to a plain physical line either) — a
+	// physical product tapped while that pile is active still lands as an ordinary,
+	// non-overridden line instead of silently carrying a kind the line could never resolve
+	// to anyway.
+	const appliesPile =
+		!!pile &&
+		(pile.kind !== DeliveryGroupKind.OnSite ||
+			itemFulfilmentOf(cart.fulfilmentType) === ItemFulfilmentType.Service);
+
+	localCart.push({
+		...cart,
+		lineId: cart.lineId ?? newLineId(),
+		...(appliesPile
+			? {
+					lineFulfilment: pile!.kind,
+					linePickupStoreId:
+						pile!.kind === DeliveryGroupKind.PickupLater ? pile!.pickupStoreId : undefined,
+					lineAddressId: pile!.kind === DeliveryGroupKind.Shipping ? pile!.addressId : undefined
+				}
+			: {})
+	});
 	setCartLocalAndCartStore(localCart);
 }
 
@@ -120,8 +195,19 @@ export function UpdateCartItem(id: string, cart: TCartItem) {
 	// qty merged in the same way AddCartItem would — editing a variant's options into
 	// matching another existing line's options should fold them together, same as
 	// before. `c.lineId !== id` (not product_id) is what tells "itself" apart from
-	// "another line of the same SKU" now that more than one line can share a product_id.
-	const existingItem = localCart.find((c) => c.product_id === cart.product_id && c.lineId !== id);
+	// "another line of the same SKU" now that more than one line can share a product_id —
+	// but only a candidate that's actually the SAME line in every other sense (destination,
+	// fulfilment pile/branch) counts as "the same SKU", or editing one line's options could
+	// silently fold it into an unrelated line sitting in a completely different pile.
+	const editing = localCart.find((c) => c.lineId === id);
+	const existingItem = localCart.find(
+		(c) =>
+			c.product_id === cart.product_id &&
+			c.lineId !== id &&
+			(c.lineFulfilment ?? '') === (editing?.lineFulfilment ?? '') &&
+			(c.linePickupStoreId ?? '') === (editing?.linePickupStoreId ?? '') &&
+			(c.lineAddressId ?? '') === (editing?.lineAddressId ?? '')
+	);
 	if (existingItem) {
 		UpdateCartInput(existingItem.lineId!, cart.input ?? []);
 		RemoveCartItem(id);
@@ -154,34 +240,6 @@ export function UpdateCartInput(id: string, cIp: TCartOptions[]) {
 	setCartLocalAndCartStore(localCart);
 }
 
-// Re-merges every line of the same product back into one, summing their qty — the
-// inverse of the active-parcel split AddCartItem/findMergeTarget perform. Multiple lines
-// of one product only make sense WHILE the sale is actively split across several
-// delivery groups; the moment that collapses back down to a single group (the cashier
-// deleted their way back to "normal mode" — see removeUserDeliveryGroup's callers), the
-// fragments must fold back into one ordinary row instead of sitting there as confusing
-// duplicate-looking lines with nothing left to tell them apart. Options/input are not
-// compared — this mirrors AddCartItem's own pre-existing dedupe rule, which has always
-// matched by product_id alone.
-export function ConsolidateCartLines(): void {
-	const localCart = GetExistingCart();
-	const merged: TCartItem[] = [];
-	const indexByProduct = new Map<string, number>();
-
-	localCart.forEach((item) => {
-		const existingIndex = indexByProduct.get(item.product_id);
-		if (existingIndex === undefined) {
-			indexByProduct.set(item.product_id, merged.length);
-			merged.push({ ...item });
-			return;
-		}
-		const target = merged[existingIndex];
-		target.qty = Math.min(999, target.qty + item.qty);
-	});
-
-	setCartLocalAndCartStore(merged);
-}
-
 export function UpdateCartItemQty(id: string, qty: number) {
 	const localCart = GetExistingCart();
 
@@ -195,6 +253,49 @@ export function UpdateCartItemQty(id: string, qty: number) {
 	});
 
 	setCartLocalAndCartStore(localCart);
+}
+
+// Drag-and-drop reorder (CartItem.svelte's onDropOnRow) — `orderedLineIds` is the new
+// relative order for a SLICE of the cart (one pile's worth, or the whole list for a plain
+// walk-in cart), not the whole thing, since CartFulfilmentPiles only ever hands CartItem
+// one bucket at a time. The slice's lines are put back into the exact index positions they
+// already occupied in the full cart, just in the new order, so interleaved lines belonging
+// to OTHER piles never move.
+export function ReorderCartItems(orderedLineIds: string[]): void {
+	const localCart = GetExistingCart();
+	const slots = localCart
+		.map((c, i) => ({ lineId: c.lineId, index: i }))
+		.filter((s) => s.lineId && orderedLineIds.includes(s.lineId))
+		.map((s) => s.index);
+	const byId = new Map(localCart.map((c) => [c.lineId, c]));
+	const reordered = orderedLineIds.map((id) => byId.get(id)).filter((c): c is TCartItem => !!c);
+	if (slots.length !== reordered.length) return;
+
+	const result = [...localCart];
+	slots.forEach((slot, i) => {
+		result[slot] = reordered[i];
+	});
+	setCartLocalAndCartStore(result);
+}
+
+// Folds one line's qty into another and drops the first — two lines of the SAME product
+// ending up in the SAME pile (same destination/fulfilment/branch) have nothing left to
+// tell them apart, so they must read as one row with a combined qty, not two identical-
+// looking rows. Used when a drag (CartItem/CartFulfilmentPiles) lands a line on top of
+// another line of the same product, whether that's a reorder within one pile or a move
+// across piles. Silently no-ops if either id is gone (stale drag after some other change).
+export function MergeCartLines(targetLineId: string, sourceLineId: string): void {
+	if (targetLineId === sourceLineId) return;
+	const localCart = GetExistingCart();
+	const target = localCart.find((c) => c.lineId === targetLineId);
+	const source = localCart.find((c) => c.lineId === sourceLineId);
+	if (!target || !source) return;
+
+	const mergedQty = Math.min(999, target.qty + source.qty);
+	const result = localCart
+		.filter((c) => c.lineId !== sourceLineId)
+		.map((c) => (c.lineId === targetLineId ? { ...c, qty: mergedQty } : c));
+	setCartLocalAndCartStore(result);
 }
 
 // "รับบางส่วน" — flips one line between handed-over-now and shipped. Only meaningful on
@@ -232,6 +333,42 @@ export function SetCartItemFulfilment(id: string, kind: string | undefined) {
 	setCartLocalAndCartStore(localCart);
 }
 
+// Stamps a specific รับภายหลัง branch onto one line (set when a line is dragged into a
+// "เพิ่มตัวเลือกรับสินค้า" pile for a specific branch — see CartFulfilmentPiles.svelte —
+// and also used to fix up every existing รับภายหลัง line at once when the cashier edits
+// the branch from the merged card; see Cart.svelte's onSelectPickupBranch).
+export function SetCartItemPickupStore(id: string, pickupStoreId: string | undefined) {
+	const localCart = GetExistingCart();
+
+	localCart.map((c) => {
+		if (c.lineId === id) {
+			c.linePickupStoreId = pickupStoreId;
+		}
+
+		return c;
+	});
+
+	setCartLocalAndCartStore(localCart);
+}
+
+// Stamps a specific "เพิ่มตัวเลือกรับสินค้า" Shipping address onto one line (set when a
+// line is dragged into such a pile — see CartFulfilmentPiles.svelte — and also used to fix
+// up every existing line in a pile at once when the cashier edits that pile's own address
+// from its settings drawer). Same persistence pattern as SetCartItemPickupStore.
+export function SetCartItemAddressId(id: string, addressId: string | undefined) {
+	const localCart = GetExistingCart();
+
+	localCart.map((c) => {
+		if (c.lineId === id) {
+			c.lineAddressId = addressId;
+		}
+
+		return c;
+	});
+
+	setCartLocalAndCartStore(localCart);
+}
+
 // Clears every line's per-line fulfilment override AND legacy receiveMode — used when the
 // sale-level fulfilment/channel changes in a way that invalidates whatever the cashier had
 // picked per line before (e.g. switching the whole sale between POS/online/marketplace),
@@ -239,9 +376,17 @@ export function SetCartItemFulfilment(id: string, kind: string | undefined) {
 export function ResetPhysicalLineFulfilment() {
 	const localCart = GetExistingCart();
 
-	const updated = localCart.map((c) => ({ ...c, lineFulfilment: undefined, receiveMode: undefined }));
+	const updated = localCart.map((c) => ({
+		...c,
+		lineFulfilment: undefined,
+		receiveMode: undefined,
+		linePickupStoreId: undefined,
+		lineAddressId: undefined
+	}));
 
 	setCartLocalAndCartStore(updated);
+	openFulfilmentPiles.set([]);
+	activeFulfilmentPile.set(undefined);
 }
 
 export function RemoveCartItem(id: string) {
@@ -262,6 +407,11 @@ export function ClearAllItem() {
 		}
 	});
 	localStorage.removeItem(`${localStorageKey.CART}_${getStoreId()}`);
+	// Otherwise the NEXT sale opens with whatever empty "เพิ่มตัวเลือกรับสินค้า" sections
+	// (or an active one) the cashier happened to leave on this one — there's no cart left
+	// for either to mean anything about.
+	openFulfilmentPiles.set([]);
+	activeFulfilmentPile.set(undefined);
 }
 
 export function calculateTotalPrice(cartList: TCartItem[]): number {

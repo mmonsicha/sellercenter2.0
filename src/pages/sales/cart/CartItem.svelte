@@ -1,17 +1,32 @@
+<script context="module" lang="ts">
+	import { writable } from 'svelte/store';
+	// Shared by every CartItem instance (CartFulfilmentPiles renders one per pile) — a
+	// plain per-instance variable couldn't tell a row in pile B "something is being
+	// dragged, but not from here" apart from "nothing is being dragged at all", since the
+	// drag always starts in a DIFFERENT component instance (pile A). That ambiguity used
+	// to make a hovered row in pile B show the same-pile "reorder here" dashed outline
+	// even for a cross-pile drag, which only ever moves the WHOLE line into pile B, not to
+	// that row's specific position.
+	const draggingLineId = writable<string | undefined>(undefined);
+</script>
+
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import CustomInputNumber from '$components/CustomInputNumber.svelte';
 	import Modal from '$components/modal/Modal.svelte';
 	import type { TCartItem } from '$stores/cart';
-	import { GetExistingCart, RemoveCartItem, UpdateCartItemQty } from '$stores/cart/cart';
+	import {
+		GetExistingCart,
+		MergeCartLines,
+		ReorderCartItems,
+		RemoveCartItem,
+		UpdateCartItemQty
+	} from '$stores/cart/cart';
 	import { setCartItemInfo, setCurrentCartId } from '$stores/cart/cart-item';
 	import { deliveryGroups, showDeliveryDetail } from '$stores/order/delivery-group';
 	import {
 		DeliveryGroupKind,
 		ItemFulfilmentType,
 		basicCategoryLabel,
-		fulfilmentTone,
-		groupKindHint,
 		groupKindIcon,
 		groupKindLabel,
 		isServiceItem,
@@ -78,6 +93,20 @@
 	export let fulfilmentOptionsOf: ((item: TCartItem) => string[]) | undefined = undefined;
 	export let fulfilmentOf: ((item: TCartItem) => string) | undefined = undefined;
 	export let onChangeFulfilment: ((item: TCartItem, kind: string) => void) | undefined = undefined;
+	// Modal.svelte toggles its "show" attribute via document.querySelector on a DOM id
+	// built from this id — when CartFulfilmentPiles renders one <CartItem> per bucket,
+	// several instances exist in the DOM at once. Without a per-instance suffix here they
+	// would all share the same "trash"/"zero-qty" DOM id, so querySelector would always
+	// grab the FIRST one in the document regardless of which bucket's modal was actually
+	// opened — the wrong row would appear to not delete, and the modal it was really
+	// shown in would never see its own ShowModal flip back to false.
+	export let instanceId: string | undefined = undefined;
+	// Modal.svelte looks this up as a CSS id selector (document.querySelector('#'+id)) —
+	// anything outside [a-zA-Z0-9_-] (a branch/store id with punctuation, say) would be
+	// parsed as CSS syntax (a stray `:` reads as a pseudo-class) and throw, silently
+	// breaking that pile's remove/zero-qty modal. Sanitized here once rather than trusting
+	// every caller of `instanceId` to already produce a safe string.
+	$: modalIdSuffix = instanceId ? `-${instanceId.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
 	var showRemoveModal: boolean = false;
 	var showZeroQtyModal: boolean = false;
 	var removeItem: TCartItem = items[0];
@@ -143,109 +172,67 @@
 	}
 
 	// `as DeliveryGroupKind` inline in markup breaks Svelte's template parser (consumed
-	// as module script, not an expression) — these wrappers only satisfy TS in the
-	// template, the underlying functions accept the plain string fine at runtime.
+	// as module script, not an expression) — this wrapper only satisfies TS in the
+	// template, the underlying function accepts the plain string fine at runtime.
 	function labelOf(kind: string): string {
 		return basicCategoryLabel(kind as DeliveryGroupKind);
 	}
 
-	function iconOf(kind: string): string {
-		return groupKindIcon(kind as DeliveryGroupKind);
+	// Drag & drop replaces the old per-line dropdown entirely — now that "เพิ่มตัวเลือก
+	// รับสินค้า" opens a pile up front, moving a line between piles (or just reordering it
+	// within one) is a drag, not a picker. Dropping a line back onto its OWN pile here only
+	// ever needs to reorder — moving it to a DIFFERENT pile is handled one level up, where
+	// the pile's kind is known (see CartFulfilmentPiles.svelte).
+	let dragOverLineId: string | undefined;
+	// Whether the line currently being dragged (module-level draggingLineId, shared across
+	// every pile's own CartItem instance) actually belongs to THIS pile — only then does a
+	// hovered row mean "reorder to here" rather than "move into this pile generally".
+	$: draggingIsOwnLine = $draggingLineId !== undefined && items.some((i) => i.lineId === $draggingLineId);
+
+	function onDragStartItem(e: DragEvent, item: TCartItem) {
+		if (!item.lineId) return;
+		draggingLineId.set(item.lineId);
+		e.dataTransfer?.setData('text/plain', item.lineId);
+		if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
 	}
 
-	function hintOf(kind: string): string {
-		return groupKindHint(kind as DeliveryGroupKind);
+	function onDragEndItem() {
+		draggingLineId.set(undefined);
+		dragOverLineId = undefined;
 	}
 
-	function toneOf(kind: string): string {
-		return fulfilmentTone(kind as DeliveryGroupKind);
+	function onDragOverRow(e: DragEvent, item: TCartItem) {
+		e.preventDefault();
+		if (draggingIsOwnLine) dragOverLineId = item.lineId;
 	}
 
-	// The per-line pill dropdown (replaces the old native <select>). One line at a time
-	// can be open; openLineId doubles as "which item's popover, if any" and "is my own
-	// popover the open one" for every row's own markup below.
-	let openLineId: string | undefined;
-	// The menu is position: fixed, so it would detach from its pill once anything scrolls.
-	const closeMenuOnMove = () => (openLineId = undefined);
-	onMount(() => {
-		window.addEventListener('scroll', closeMenuOnMove, true);
-		return () => window.removeEventListener('scroll', closeMenuOnMove, true);
-	});
-	let activeIndex = 0;
-	let menuPos: { top?: number; bottom?: number; left: number; width: number } | undefined;
-	let wrapperEls: Record<string, HTMLElement> = {};
-	let triggerEls: Record<string, HTMLButtonElement> = {};
-
-	function closeLineMenu() {
-		openLineId = undefined;
-		menuPos = undefined;
-	}
-
-	function positionLineMenu(lineId: string) {
-		const el = triggerEls[lineId];
-		if (!el) return;
-		const rect = el.getBoundingClientRect();
-		const estimatedMenuHeight = 220;
-		const spaceBelow = window.innerHeight - rect.bottom;
-		const openUpward = spaceBelow < estimatedMenuHeight && rect.top > spaceBelow;
-		menuPos = {
-			left: rect.left,
-			width: Math.max(rect.width, 200),
-			...(openUpward ? { bottom: window.innerHeight - rect.top + 4 } : { top: rect.bottom + 4 })
-		};
-	}
-
-	function toggleLineMenu(item: TCartItem, options: string[], current: string) {
-		const lineId = item.lineId ?? '';
-		if (openLineId === lineId) {
-			closeLineMenu();
+	// Reorders within THIS list only — a dragged line that isn't one of `items` came from
+	// a different pile, so it's left alone here and the drop bubbles up to whichever
+	// pile-section container actually owns that kind (see CartFulfilmentPiles.svelte).
+	// Dropped onto another row of the SAME product, though, there's nothing left to tell
+	// the two rows apart (same pile, same product) — merge instead of reordering, same as
+	// a cross-pile drop onto a same-product line does (CartFulfilmentPiles' onDropOnPile).
+	function onDropOnRow(e: DragEvent, targetItem: TCartItem) {
+		const draggedId = e.dataTransfer?.getData('text/plain');
+		dragOverLineId = undefined;
+		if (!draggedId || draggedId === targetItem.lineId) return;
+		const draggedItem = items.find((i) => i.lineId === draggedId);
+		if (draggedItem && targetItem.lineId && draggedItem.product_id === targetItem.product_id) {
+			e.preventDefault();
+			e.stopPropagation();
+			MergeCartLines(targetItem.lineId, draggedId);
 			return;
 		}
-		openLineId = lineId;
-		activeIndex = Math.max(options.indexOf(current), 0);
-		positionLineMenu(lineId);
-	}
-
-	function selectLineOption(item: TCartItem, kind: string) {
-		onChangeFulfilment?.(item, kind);
-		closeLineMenu();
-	}
-
-	function onTriggerKeydown(e: KeyboardEvent, item: TCartItem, options: string[], current: string) {
-		if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
-			e.preventDefault();
-			toggleLineMenu(item, options, current);
-		} else if (e.key === 'Escape') {
-			closeLineMenu();
-		}
-	}
-
-	function onMenuKeydown(e: KeyboardEvent, item: TCartItem, options: string[]) {
-		if (e.key === 'ArrowDown') {
-			e.preventDefault();
-			activeIndex = (activeIndex + 1) % options.length;
-		} else if (e.key === 'ArrowUp') {
-			e.preventDefault();
-			activeIndex = (activeIndex - 1 + options.length) % options.length;
-		} else if (e.key === 'Enter') {
-			e.preventDefault();
-			selectLineOption(item, options[activeIndex]);
-		} else if (e.key === 'Escape') {
-			e.preventDefault();
-			closeLineMenu();
-			triggerEls[openLineId ?? '']?.focus();
-		}
-	}
-
-	function onWindowClick(e: MouseEvent) {
-		if (!openLineId) return;
-		const target = e.target as Node;
-		if (wrapperEls[openLineId]?.contains(target)) return;
-		closeLineMenu();
-	}
-
-	function onWindowKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape' && openLineId) closeLineMenu();
+		const ids = items.map((i) => i.lineId).filter((id): id is string => !!id);
+		const from = ids.indexOf(draggedId);
+		const to = ids.indexOf(targetItem.lineId ?? '');
+		if (from < 0 || to < 0) return;
+		e.preventDefault();
+		e.stopPropagation();
+		const reordered = [...ids];
+		reordered.splice(from, 1);
+		reordered.splice(to, 0, draggedId);
+		ReorderCartItems(reordered);
 	}
 
 	function _onUpdateItemQty(item: TCartItem) {
@@ -269,11 +256,9 @@
 	}
 </script>
 
-<svelte:window on:click={onWindowClick} on:keydown={onWindowKeydown} on:resize={closeMenuOnMove} />
-
 <Modal
 	toggleModal={toggleRemoveModal}
-	id="trash"
+	id={`trash${modalIdSuffix}`}
 	icon="outline-exclamation-circle"
 	iconColor="#d97706"
 	ShowModal={showRemoveModal}
@@ -308,7 +293,7 @@
 		UpdateCartItemQty(removeItem.lineId ?? '', 1);
 		toggleZeroQtyModal();
 	}}
-	id="zero-qty"
+	id={`zero-qty${modalIdSuffix}`}
 	icon="outline-exclamation-circle"
 	iconColor="#d97706"
 	ShowModal={showZeroQtyModal}
@@ -368,10 +353,25 @@
 		     always CAN move down — see 1c/1e) — computed once here so both the button's
 		     disabled/label logic and the reason line below read the same value. -->
 		{@const blockReason = pile === 'ship' ? receiveNowBlockReason(item, { sellingOriginId }) : undefined}
-		<div class="grid-container" on:click={() => _onClickCart(item)}>
+		<div
+			class="grid-container"
+			class:dragging={$draggingLineId === item.lineId}
+			class:drag-over={dragOverLineId === item.lineId && $draggingLineId !== item.lineId}
+			draggable={true}
+			on:click={() => _onClickCart(item)}
+			on:dragstart={(e) => onDragStartItem(e, item)}
+			on:dragend={onDragEndItem}
+			on:dragover={(e) => onDragOverRow(e, item)}
+			on:dragleave={() => (dragOverLineId = undefined)}
+			on:drop={(e) => onDropOnRow(e, item)}
+			data-testid={`sales.cart.line.row.${item.lineId}`}
+		>
 			<!-- The standalone trash column is gone: at qty 1 the minus below turns into the
 			     trash, so removal lives in one place instead of two, and the row keeps the
-			     width for the product name. -->
+			     width for the product name. Draggable so a line can be reordered or moved to
+			     another fulfilment pile (see onDragStartItem/onDropOnRow and
+			     CartFulfilmentPiles' own pile-level drop targets) — replaces the old per-line
+			     dropdown now that "เพิ่มตัวเลือกรับสินค้า" opens piles up front instead. -->
 			<div class="image">
 				<img src={getImageUrl(item.image)} alt={item.product_name} />
 			</div>
@@ -488,63 +488,11 @@
 				{#if fulfilmentOptionsOf && fulfilmentOf}
 					{@const options = fulfilmentOptionsOf(item)}
 					{@const current = fulfilmentOf(item)}
-					{#if options.length > 1}
-						{@const lineId = item.lineId ?? ''}
-						<div
-							class="line-fulfilment"
-							on:click|stopPropagation
-							bind:this={wrapperEls[lineId]}
-						>
-							<button
-								type="button"
-								class="line-fulfilment-pill"
-								data-tone={toneOf(current)}
-								aria-haspopup="listbox"
-								aria-expanded={openLineId === lineId}
-								aria-label="รูปแบบการรับสินค้าของรายการนี้"
-								data-testid={`sales.cart.line.fulfilment.${lineId}`}
-								bind:this={triggerEls[lineId]}
-								on:click={() => toggleLineMenu(item, options, current)}
-								on:keydown={(e) => onTriggerKeydown(e, item, options, current)}
-							>
-								<ssk-icon name={iconOf(current)} size="xs"></ssk-icon>
-								<span class="line-fulfilment-pill-label">{labelOf(current)}</span>
-								<ssk-icon name="solid-chevron-down" size="xs"></ssk-icon>
-							</button>
-							{#if openLineId === lineId && menuPos}
-								<ul
-									class="line-fulfilment-menu"
-									role="listbox"
-									style={`left:${menuPos.left}px; width:${menuPos.width}px; ${
-										menuPos.top !== undefined ? `top:${menuPos.top}px;` : `bottom:${menuPos.bottom}px;`
-									}`}
-									on:keydown={(e) => onMenuKeydown(e, item, options)}
-								>
-									{#each options as opt, i (opt)}
-										<li
-											role="option"
-											aria-selected={opt === current}
-											class:active={i === activeIndex}
-											data-testid={`sales.cart.line.fulfilment.${lineId}.option.${opt}`}
-											on:click={() => selectLineOption(item, opt)}
-										>
-											<ssk-icon name={iconOf(opt)} size="xs"></ssk-icon>
-											<span class="line-fulfilment-option-text">
-												<span class="line-fulfilment-option-label">{labelOf(opt)}</span>
-												<span class="line-fulfilment-option-hint">{hintOf(opt)}</span>
-											</span>
-											{#if opt === current}
-												<ssk-icon name="outline-check" size="xs"></ssk-icon>
-											{/if}
-										</li>
-									{/each}
-								</ul>
-							{/if}
-						</div>
-					{:else if options.length === 1 && current !== DeliveryGroupKind.Shipping}
-						<!-- Digital/service have exactly one legal option — show it as a read-only
-						     badge instead of a dropdown with nothing to choose. Marketplace Shipping
-						     is suppressed entirely per spec (B8: no per-line picker at all). -->
+					{#if options.length === 1 && current !== DeliveryGroupKind.Shipping}
+						<!-- Digital/service have exactly one legal destination — shown as a
+						     read-only badge; nothing to pick, and nowhere else it could be
+						     dragged to (see lineFulfilmentOptions). Marketplace Shipping is
+						     suppressed entirely per spec (B8: no per-line picker at all). -->
 						<span
 							class="line-fulfilment-badge"
 							data-testid={`sales.cart.line.fulfilment.${item.lineId}`}
@@ -651,107 +599,11 @@
 		text-overflow: ellipsis;
 	}
 
-	.line-fulfilment {
-		position: relative;
-		margin-top: 0.1875rem;
-	}
-
-	.line-fulfilment-pill {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-		font: inherit;
-		font-size: var(--ssk-font-size-xs);
-		font-weight: 600;
-		border: none;
-		border-radius: 999px;
-		padding: 0.1875rem 0.5rem;
-		cursor: pointer;
-		max-width: 100%;
-	}
-
-	.line-fulfilment-pill[data-tone='success'] {
-		background: var(--ssk-colors-success-50, #ecfdf5);
-		color: var(--ssk-colors-success-700, #047857);
-	}
-
-	.line-fulfilment-pill[data-tone='warning'] {
-		background: var(--ssk-colors-warning-50, #fffbeb);
-		color: var(--ssk-colors-warning-700, #b45309);
-	}
-
-	.line-fulfilment-pill[data-tone='info'] {
-		background: var(--ssk-colors-info-50, #eff6ff);
-		color: var(--ssk-colors-info-700, #1d4ed8);
-	}
-
-	.line-fulfilment-pill[data-tone='violet'] {
-		background: var(--ssk-colors-violet-50, #f5f3ff);
-		color: var(--ssk-colors-violet-700, #6d28d9);
-	}
-
-	.line-fulfilment-pill[data-tone='primary'] {
-		background: var(--ssk-colors-primary-50, #fff7ed);
-		color: var(--ssk-colors-primary-700, #c2410c);
-	}
-
-	.line-fulfilment-pill-label {
-		overflow: hidden;
-		white-space: nowrap;
-		text-overflow: ellipsis;
-	}
-
-	/* position: fixed + a rect computed at open time, rather than absolute inside
-	   .cart-item — the scroll container clips an absolutely-positioned child the
-	   moment it would overflow, which a pill near the bottom of the list hits often. */
-	.line-fulfilment-menu {
-		position: fixed;
-		z-index: 1000;
-		margin: 0;
-		padding: 0.25rem;
-		list-style: none;
-		background: white;
-		border-radius: 8px;
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-		max-height: 16rem;
-		overflow-y: auto;
-	}
-
-	.line-fulfilment-menu li {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.5rem;
-		border-radius: 6px;
-		cursor: pointer;
-	}
-
-	.line-fulfilment-menu li:hover,
-	.line-fulfilment-menu li.active {
-		background: var(--ssk-colors-gray-50);
-	}
-
-	.line-fulfilment-option-text {
-		display: flex;
-		flex-direction: column;
-		min-width: 0;
-		flex: 1;
-	}
-
-	.line-fulfilment-option-label {
-		font-size: var(--ssk-font-size-sm);
-		font-weight: 600;
-		color: var(--ssk-colors-gray-800);
-	}
-
-	.line-fulfilment-option-hint {
-		font-size: var(--ssk-font-size-xs);
-		color: var(--ssk-colors-gray-500);
-	}
-
 	.line-fulfilment-badge {
 		display: inline-block;
-		margin-top: 0.1875rem;
+		/* 0.125rem matches the same stacked-line rhythm .meta-line and .block-reason
+		   use elsewhere in this row, rather than the one-off 0.1875rem this used to carry. */
+		margin-top: 0.125rem;
 		font-size: var(--ssk-font-size-xs);
 		color: var(--ssk-colors-gray-500);
 	}
@@ -766,7 +618,7 @@
 	}
 
 	.grid-container {
-		cursor: pointer;
+		cursor: grab;
 		display: grid;
 		/* image | detail | qty — the trash column was folded into the qty control.
 		   minmax(0, 1fr), not 1fr: a plain 1fr floors at the content's min-content width,
@@ -778,6 +630,21 @@
 		margin-bottom: 1rem;
 		gap: 1rem;
 		padding: 0.5rem 1rem;
+		transition: opacity 0.1s, border-color 0.1s;
+	}
+
+	/* Being dragged — kept visible rather than hidden so the cashier still has a visual
+	   anchor for where it came from while deciding where to drop it. */
+	.grid-container.dragging {
+		opacity: 0.5;
+	}
+
+	/* The row currently under the dragged line — reordering lands it here on drop (see
+	   onDropOnRow); a moved-to-a-different-pile drop is the pile section's own border
+	   highlight instead (see CartFulfilmentPiles.svelte). */
+	.grid-container.drag-over {
+		border-color: var(--ssk-colors-primary-400, #ff8a4c);
+		border-style: dashed;
 	}
 
 	/* The cart panel is ~340px at 1024px. A 56px thumbnail plus two 16px gutters plus the
@@ -823,7 +690,7 @@
 		   variant line pushed the row open no matter what the grid said. */
 		max-width: 100%;
 		min-width: 0;
-		gap: 0.4rem;
+		gap: 0.375rem;
 	}
 
 	.option > .overflow-ellipsis {
@@ -868,7 +735,7 @@
 	@media (max-width: 480px) {
 		.grid-container:not(.order) {
 			gap: 0.5rem;
-			padding: 0.4rem 0.5rem;
+			padding: 0.375rem 0.5rem;
 		}
 
 		.grid-container:not(.order) img {

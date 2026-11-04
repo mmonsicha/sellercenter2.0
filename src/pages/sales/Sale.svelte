@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { overflowTooltip } from '$pages/sales/overflow-tooltip';
 	import BlankPage from '$components/BlankPage.svelte';
 	import LoadingPage from '$components/LoadingPage.svelte';
 	import PermissionDenied from '$components/PermissionDenied.svelte';
@@ -428,7 +429,7 @@
 		<PermissionDenied />
 	{:else}
 		{#key currentCompanyId}
-			<div class="container">
+			<div class="container" use:overflowTooltip>
 				<div class="left-section">
 					{#if $salesProductList.total > 0}
 						<div class="search-row">
@@ -456,6 +457,7 @@
 						</div>
 						<ssk-tabs
 							id="tabs-sales"
+							class="sales-tabs"
 							variant="button"
 							widthtab="true"
 							labels={tabLabels}
@@ -512,30 +514,25 @@
 	.left-section {
 		padding: 1.5rem;
 		flex: 2;
+		min-height: 0;
 		border-right: 1px solid var(--ssk-colors-gray-100);
+	}
+
+	.sales-tabs {
+		flex: 1;
+		min-height: 0;
 	}
 
 	.card-scroll {
 		display: flex;
 		overflow-x: hidden;
+		overflow-y: auto;
 		width: 100%;
+		flex: 1;
+		min-height: 0;
 		max-height: 70vh;
 		flex-direction: column;
 		box-sizing: border-box;
-	}
-
-	/* (assuming 1920x1080 resolution) */
-	@media (min-width: 1920px) and (max-width: 2560px) {
-		.card-scroll {
-			max-height: 80vh;
-		}
-	}
-
-	/* (assuming 2560x1440 resolution or higher) */
-	@media (min-width: 2560px) {
-		.card-scroll {
-			max-height: 100vh;
-		}
 	}
 
 	.right-section {
@@ -594,9 +591,13 @@
 
 	.grid-density {
 		display: flex;
+		align-items: center;
 		flex-shrink: 0;
-		gap: 0.25rem;
+		gap: 0.25em;
 		padding: 0.25rem;
+		margin-top: 4px;
+		height: 40px;
+		box-sizing: border-box;
 		background: var(--ssk-colors-gray-100);
 		border-radius: 10px;
 	}

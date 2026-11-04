@@ -6,20 +6,13 @@ import { isMultiParcelEnabled } from '$lib/feature-flags';
 import {
 	BASIC_CATEGORY_ORDER,
 	DeliveryGroupKind,
-	ItemFulfilmentType,
-	ReceiveMode,
 	SplitReason,
-	canReceiveNow,
+	computeKindBuckets,
 	isDestinationReady,
+	isGroupFulfilmentComplete,
 	isHandoverGroup,
 	isMarketplaceChannel,
-	isServiceItem,
-	itemFulfilmentOf,
-	kindNeedsShippingMethod,
-	kindNeedsTravelFee,
 	newDeliveryGroup,
-	receiveModeOf,
-	resolveLineKind,
 	type DeliveryGroup,
 	type LineFulfilmentCtx
 } from '$lib/entities/order/delivery-group';
@@ -28,9 +21,9 @@ export const deliveryGroups = writable<DeliveryGroup[]>([]);
 
 /**
  * The non-digital group kind a sale collects its items through — shared by
- * syncDeliveryGroups' own default/origin groups and by enableGroupOrder below, so a
- * manually-started group order always matches how the rest of the sale is already being
- * collected (pickup now/later/ship) instead of defaulting to Shipping regardless.
+ * syncDeliveryGroups' own default/origin groups, so a freshly-opened fulfilment pile
+ * always matches how the rest of the sale is already being collected (pickup now/later/
+ * ship) instead of defaulting to Shipping regardless.
  */
 export function physicalKindFor(
 	fulfilmentType: string,
@@ -47,47 +40,9 @@ export function physicalKindFor(
 		: DeliveryGroupKind.PickupInStore;
 }
 
-/**
- * "Shop into this parcel" focus — the cashier picks one cashier-made parcel and every
- * product tapped afterwards lands in it instead of the default parcel (the prototype's
- * `activeGroupId`). undefined = the ordinary behaviour: new lines go to the default
- * parcel. Only a user (soft-split) parcel can be active — a hard split is never a place
- * the cashier chose to put things — and it clears itself the moment that parcel stops
- * existing, so it can never point at a ghost.
- */
-export const activeDeliveryGroupId = writable<string | undefined>(undefined);
-
-export function setActiveDeliveryGroup(id: string | undefined): void {
-	if (id === undefined) {
-		activeDeliveryGroupId.set(undefined);
-		return;
-	}
-	const target = get(deliveryGroups).find((g) => g.id === id);
-	if (target && !target.locked && target.splitReason === SplitReason.User) {
-		activeDeliveryGroupId.set(id);
-	}
-}
-
 // The buyer address the last sync handed to the default parcel, so the next sync can
 // tell a real buyer-side change apart from an unrelated re-run. See step 4 below.
 let lastSyncedBuyerAddress: string | undefined;
-
-// Whether the cashier has manually opted into a group order on a sale that otherwise
-// builds no groups at all (a pickup/pickup-later sale with no digital item — see the
-// early-return guard in syncDeliveryGroups). Plain module state, same as
-// lastSyncedBuyerAddress above: nothing needs to bind to this reactively, it only
-// steers one branch of one function. Reset wherever groups collapse back to "nothing
-// split" so a later, unrelated sale never inherits a stale "stay split" flag.
-let groupOrderActive = false;
-
-/**
- * Readable mirror of `groupOrderActive` for the UI — whether the cashier's advanced
- * group-order mode is on (named parcels, per-parcel addresses, drag-and-drop) or the
- * sale is still in basic mode (split only by fulfilment category, one shared destination
- * per category — see `syncBasicGroups`). Kept in lockstep with `groupOrderActive`
- * everywhere that module flag is assigned.
- */
-export const groupOrderMode = writable<boolean>(false);
 
 /**
  * count > 1 — a real split. Still exported for copy that reads the count itself (the
@@ -113,21 +68,17 @@ export const deliverySummary = derived(deliveryGroups, ($g) => {
 	// destination" — it is simply waiting for items. Counting it would let
 	// "+ แยกพัสดุเพิ่ม" disable the pay button the instant it is clicked, before the
 	// cashier has had the chance to move anything into the parcel they just made.
-	const missing = $g.filter((group) => group.itemIds.length > 0 && !isDestinationReady(group));
-	// Only a Shipping/OnSite group ever HAS a fee to speak of — a pickup/digital/handover
-	// group's shippingFee is undefined simply because it was never asked for one, not
-	// because something is missing. Checking every group here (the old bug) meant an
-	// ordinary pickup-now sale always read as "ค่าจัดส่ง ยังไม่ครบ", regardless of whether
-	// a single real parcel was actually unresolved.
-	const feeBearingGroups = $g.filter(
-		(group) => kindNeedsShippingMethod(group.kind) || kindNeedsTravelFee(group.kind)
-	);
-	const feeUnknown = feeBearingGroups.some((group) => group.shippingFee === undefined);
-	// Fees that ARE known still get summed even when others aren't — the row shows
-	// "—" only through feeUnknown, never a partial total pretending to be the whole.
-	// Summed across every group regardless (a pickup/digital group's shippingFee is
-	// always undefined anyway, contributing 0 either way), kept as-is to avoid touching
-	// commitDeliveryGroupsToOrder's existing total.
+	// isGroupFulfilmentComplete (not the narrower isDestinationReady) is what decides
+	// "missing" here — a destination alone isn't enough to let a Shipping/OnSite group
+	// through with no fee set, or a PickupLater group through with no branch.
+	const missing = $g.filter((group) => group.itemIds.length > 0 && !isGroupFulfilmentComplete(group));
+	// A blank Shipping/OnSite fee is not "unknown" any more — it's ฿0 until the cashier
+	// says otherwise (see isGroupFulfilmentComplete's own comment), so there is nothing
+	// left for this to flag. Kept as a field (always false) rather than removed outright,
+	// so CartFooter's own $deliverySummary.feeUnknown reads don't need touching.
+	const feeUnknown = false;
+	// Every group's shippingFee defaults to 0 in the sum — a pickup/digital/handover
+	// group's is always undefined anyway (never asked for one), contributing 0 either way.
 	const totalFee = $g.reduce((sum, group) => sum + (group.shippingFee ?? 0), 0);
 
 	return {
@@ -150,18 +101,110 @@ export const deliverySummary = derived(deliveryGroups, ($g) => {
 	};
 });
 
+interface KindGroupOpts {
+	addressGroupSeq: number;
+	locked: boolean;
+	splitReason: SplitReason | undefined;
+	marketplace?: boolean;
+	subChannel?: string;
+	recipientName?: string;
+	recipientAddress?: string;
+	recipientAddressId?: string;
+	recipientEmail?: string;
+	recipientPhone?: string;
+	pickupStoreId?: string;
+}
+
+// Builds one kind-bucket's full field set — courier/method/fee for Shipping, travel
+// address for OnSite, branch for PickupLater, email/phone for Digital, nothing-to-ship
+// for PickupInStore. Called once per Shipping address / PickupLater branch bucket by
+// syncBasicGroups, so every bucket of a kind is built through the exact same rules.
+function buildKindGroup(
+	kind: DeliveryGroupKind,
+	itemIds: string[],
+	existing: DeliveryGroup | undefined,
+	opts: KindGroupOpts
+): DeliveryGroup {
+	const base: DeliveryGroup = {
+		...(existing ?? newDeliveryGroup({ addressGroupSeq: opts.addressGroupSeq })),
+		kind,
+		itemIds,
+		locked: opts.locked,
+		splitReason: opts.splitReason,
+		addressGroupSeq: opts.addressGroupSeq
+	};
+
+	switch (kind) {
+		case DeliveryGroupKind.Shipping:
+			// Marketplace locks courier/method to the platform (the merchant never picks a
+			// courier here), but NOT the fee — base already carries over any shippingFee
+			// the merchant set on this group, via the ...existing spread above, so this
+			// must not stamp it back to 0 on every sync or a saved fee would vanish the
+			// next time the cart changes.
+			return opts.marketplace
+				? {
+						...base,
+						courier: opts.subChannel,
+						method: 'platform',
+						recipientName: opts.recipientName,
+						recipientAddress: opts.recipientAddress,
+						recipientAddressId: opts.recipientAddressId
+					}
+				: {
+						...base,
+						// A group that was marketplace-locked before (e.g. the cashier switched
+						// the sub-channel away from Shopee/Lazada/TikTok Shop/LINE SHOPPING back
+						// to an ordinary one) must not keep carrying the 'platform' sentinel and
+						// that platform's courier/fee forward via the ...base spread above — the
+						// merchant now needs to pick a real courier and fee for this group.
+						...(base.method === 'platform'
+							? { courier: undefined, method: 'unknown', shippingFee: undefined }
+							: {}),
+						recipientName: opts.recipientName,
+						recipientAddress: opts.recipientAddress,
+						recipientAddressId: opts.recipientAddressId
+					};
+		case DeliveryGroupKind.OnSite:
+			return {
+				...base,
+				recipientName: opts.recipientName,
+				recipientAddress: opts.recipientAddress,
+				recipientAddressId: opts.recipientAddressId
+			};
+		case DeliveryGroupKind.PickupLater:
+			return { ...base, pickupStoreId: opts.pickupStoreId };
+		case DeliveryGroupKind.Digital:
+			return {
+				...base,
+				shippingFee: 0,
+				recipientEmail: opts.recipientEmail,
+				recipientPhone: opts.recipientPhone
+			};
+		case DeliveryGroupKind.PickupInStore:
+		default:
+			return {
+				...base,
+				shippingFee: 0,
+				recipientAddress: undefined,
+				recipientAddressId: undefined
+			};
+	}
+}
+
 /**
- * Basic mode's engine — the default whenever `groupOrderActive` is false. Splits ONLY by
+ * Basic mode's engine — the only engine, now that "จัดส่งหลายที่อยู่" is gone. Splits by
  * fulfilment category (PickupInStore/PickupLater/Shipping/OnSite/Digital), never by
- * origin, stock, or a cashier-made parcel — there is exactly one group per category
- * actually present in the cart, each sharing ONE destination for that whole category
- * (the sale's own customer address / pickup branch / email+phone), never a per-item or
- * per-parcel override. See FULFILMENT spec B1–B8.
+ * origin, stock, or a cashier-made parcel — one group per category actually present in
+ * the cart, sharing ONE destination for that whole category (the sale's own customer
+ * address / pickup branch / email+phone), never a per-item override — EXCEPT PickupLater
+ * (one group per distinct branch in play, see pickupLaterBuckets below) and Shipping (one
+ * group per distinct address in play, see shippingBuckets below), each of which a cashier
+ * can fan out into several independently-configurable piles via "เพิ่มตัวเลือกรับสินค้า".
+ * See FULFILMENT spec B1–B8.
  */
 function syncBasicGroups(items: TCartItem[], ctx: Parameters<typeof syncDeliveryGroups>[1]): void {
 	if (items.length === 0) {
 		deliveryGroups.set([]);
-		activeDeliveryGroupId.set(undefined);
 		lastSyncedBuyerAddress = undefined;
 		return;
 	}
@@ -174,20 +217,12 @@ function syncBasicGroups(items: TCartItem[], ctx: Parameters<typeof syncDelivery
 	const saleDefaultKind = physicalKindFor(ctx.fulfilmentType, ctx.isDelivery);
 
 	const previous = get(deliveryGroups);
-	const buckets = new Map<DeliveryGroupKind, string[]>();
-	items.forEach((item) => {
-		if (!item.lineId) return;
-		// The legacy "รับเลยที่เคาน์เตอร์" per-line toggle only ever meant something on a
-		// POS จัดส่งให้ลูกค้า sale (see the old step 1.5's own gate) — carrying it into
-		// resolveLineKind unconditionally would make an unrelated flag on a stale cart
-		// line start acting like a line-level pick it never actually was.
-		const honourReceiveMode = !!ctx.allowPartialReceive && !!ctx.isDelivery;
-		const effectiveItem = honourReceiveMode ? item : { ...item, receiveMode: undefined };
-		const kind = resolveLineKind(effectiveItem, saleDefaultKind, lineCtx);
-		const bucket = buckets.get(kind) ?? [];
-		bucket.push(item.lineId);
-		buckets.set(kind, bucket);
-	});
+	// The legacy "รับเลยที่เคาน์เตอร์" per-line toggle only ever meant something on a
+	// POS จัดส่งให้ลูกค้า sale (see the old step 1.5's own gate) — carrying it into
+	// resolveLineKind unconditionally would make an unrelated flag on a stale cart
+	// line start acting like a line-level pick it never actually was.
+	const honourReceiveMode = !!ctx.allowPartialReceive && !!ctx.isDelivery;
+	const buckets = computeKindBuckets(items, saleDefaultKind, lineCtx, honourReceiveMode);
 
 	const presentKinds = BASIC_CATEGORY_ORDER.filter((kind) => (buckets.get(kind)?.length ?? 0) > 0);
 
@@ -204,7 +239,6 @@ function syncBasicGroups(items: TCartItem[], ctx: Parameters<typeof syncDelivery
 			saleDefaultKind === DeliveryGroupKind.PickupInStore)
 	) {
 		deliveryGroups.set([]);
-		activeDeliveryGroupId.set(undefined);
 		lastSyncedBuyerAddress = undefined;
 		return;
 	}
@@ -216,78 +250,163 @@ function syncBasicGroups(items: TCartItem[], ctx: Parameters<typeof syncDelivery
 	// Digital are deliberately excluded even when alone: a lone override-driven
 	// PickupInStore bucket is still a handover pile (SplitReason.Receive), and Digital is
 	// always a hard split (SplitReason.Product) with its own locked group regardless.
+	// CartFulfilmentPiles already visually splits a รับภายหลัง bucket into one pile PER
+	// BRANCH (keyed by linePickupStoreId ?? '', see its own `buckets` computation) — a
+	// cashier can open a second branch's pile via "เพิ่มตัวเลือกรับสินค้า" and move lines
+	// into it. But this function used to build just ONE PickupLater DeliveryGroup for the
+	// whole sale regardless of how many branch-piles existed, so there was nowhere to
+	// persist a specific branch's own pickupDate/pickupTimeSlot — a second
+	// branch's settings would collide with (or simply never reach) the first branch's
+	// group. Fan PickupLater out into one group PER DISTINCT BRANCH key instead, using the
+	// exact same key convention (`linePickupStoreId ?? ''`) CartFulfilmentPiles already uses,
+	// so each pile has its own real group to read from and save into.
+	const pickupLaterBuckets = new Map<string, string[]>();
+	const pickupLaterLineIds = new Set(buckets.get(DeliveryGroupKind.PickupLater) ?? []);
+	items.forEach((item) => {
+		if (!item.lineId || !pickupLaterLineIds.has(item.lineId)) return;
+		const branchKey = item.linePickupStoreId ?? '';
+		const bucket = pickupLaterBuckets.get(branchKey) ?? [];
+		bucket.push(item.lineId);
+		pickupLaterBuckets.set(branchKey, bucket);
+	});
+
+	// Same fan-out as PickupLater's own branch buckets above, keyed by each line's
+	// `lineAddressId` instead — a cashier can open a second (third, ...) "จัดส่งจากหน้าร้าน"
+	// pile via "เพิ่มตัวเลือกรับสินค้า", each shipping to its OWN, distinct address (see
+	// $stores/cart/cart's OpenFulfilmentPile.addressId). '' (no override) is the sale's own
+	// default address — ctx.recipientAddress — exactly like basic mode's old single
+	// Shipping group.
+	const shippingBuckets = new Map<string, string[]>();
+	const shippingLineIds = new Set(buckets.get(DeliveryGroupKind.Shipping) ?? []);
+	items.forEach((item) => {
+		if (!item.lineId || !shippingLineIds.has(item.lineId)) return;
+		const addressKey = item.lineAddressId ?? '';
+		const bucket = shippingBuckets.get(addressKey) ?? [];
+		bucket.push(item.lineId);
+		shippingBuckets.set(addressKey, bucket);
+	});
+
 	const soloKind = presentKinds.length === 1 ? presentKinds[0] : undefined;
+	// A lone PickupLater/Shipping bucket only still reads as the plain, unsplit default
+	// when there is also exactly one branch/address in play — 2+ is itself a real split
+	// (SplitReason.Fulfilment/User, locked/unlocked) even though only one KIND is present,
+	// since each pile now needs its own identifiable settings.
 	const isPlainDefault =
-		soloKind === DeliveryGroupKind.Shipping ||
+		(soloKind === DeliveryGroupKind.Shipping && shippingBuckets.size === 1) ||
 		soloKind === DeliveryGroupKind.OnSite ||
-		soloKind === DeliveryGroupKind.PickupLater;
+		(soloKind === DeliveryGroupKind.PickupLater && pickupLaterBuckets.size === 1);
 
-	const groups: DeliveryGroup[] = presentKinds.map((kind) => {
-		const existing = previous.find((g) => g.kind === kind);
-		const itemIds = buckets.get(kind) ?? [];
-		const splitReason = isPlainDefault
-			? undefined
-			: kind === DeliveryGroupKind.PickupInStore
-				? SplitReason.Receive
-				: kind === DeliveryGroupKind.Digital
-					? SplitReason.Product
-					: SplitReason.Fulfilment;
+	const plainGroups: DeliveryGroup[] = presentKinds
+		.filter(
+			(kind) => kind !== DeliveryGroupKind.PickupLater && kind !== DeliveryGroupKind.Shipping
+		)
+		.map((kind) => {
+			const existing = previous.find((g) => g.kind === kind);
+			const itemIds = buckets.get(kind) ?? [];
+			const splitReason = isPlainDefault
+				? undefined
+				: kind === DeliveryGroupKind.PickupInStore
+					? SplitReason.Receive
+					: kind === DeliveryGroupKind.Digital
+						? SplitReason.Product
+						: SplitReason.Fulfilment;
 
-		const base: DeliveryGroup = {
-			...(existing ?? newDeliveryGroup()),
-			kind,
-			itemIds,
-			locked: !isPlainDefault,
-			splitReason
-		};
+			return buildKindGroup(kind, itemIds, existing, {
+				addressGroupSeq: 1,
+				locked: !isPlainDefault,
+				splitReason,
+				marketplace,
+				subChannel: ctx.subChannel,
+				recipientName: ctx.recipientName,
+				recipientAddress: ctx.recipientAddress,
+				recipientAddressId: ctx.recipientAddressId,
+				recipientEmail: ctx.recipientEmail,
+				recipientPhone: ctx.recipientPhone,
+				pickupStoreId: ctx.pickupStoreId
+			});
+		});
 
-		switch (kind) {
-			case DeliveryGroupKind.Shipping:
-				return marketplace
-					? {
-							...base,
-							courier: ctx.subChannel,
-							method: 'platform',
-							shippingFee: 0,
-							recipientName: ctx.recipientName,
-							recipientAddress: ctx.recipientAddress,
-							recipientAddressId: ctx.recipientAddressId
-						}
-					: {
-							...base,
-							recipientName: ctx.recipientName,
-							recipientAddress: ctx.recipientAddress,
-							recipientAddressId: ctx.recipientAddressId
-						};
-			case DeliveryGroupKind.OnSite:
-				return {
-					...base,
+	const pickupLaterGroups: DeliveryGroup[] = Array.from(pickupLaterBuckets.entries()).map(
+		([branchKey, itemIds]) => {
+			const resolvedPickupStoreId = branchKey || ctx.pickupStoreId;
+			// Match by resolved pickupStoreId (not raw branchKey) so each branch's group keeps
+			// its own identity — and its own drafted pickupDate/pickupTimeSlot —
+			// stably across re-syncs, instead of being torn down and rebuilt every time the
+			// cart changes.
+			const existing = previous.find(
+				(g) =>
+					g.kind === DeliveryGroupKind.PickupLater &&
+					(g.pickupStoreId ?? ctx.pickupStoreId) === resolvedPickupStoreId
+			);
+			const splitReason = isPlainDefault ? undefined : SplitReason.Fulfilment;
+
+			return buildKindGroup(DeliveryGroupKind.PickupLater, itemIds, existing, {
+				addressGroupSeq: 1,
+				locked: !isPlainDefault,
+				splitReason,
+				marketplace,
+				subChannel: ctx.subChannel,
+				recipientName: ctx.recipientName,
+				recipientAddress: ctx.recipientAddress,
+				recipientAddressId: ctx.recipientAddressId,
+				recipientEmail: ctx.recipientEmail,
+				recipientPhone: ctx.recipientPhone,
+				pickupStoreId: resolvedPickupStoreId
+			});
+		}
+	);
+
+	// Sorted so the default ('') address always lands first/seq 1 — every other bucket's
+	// `addressGroupSeq` only matters for display ordering, never identity (that's
+	// `recipientAddressId`, matched below the same way pickupStoreId is matched above).
+	const sortedShippingKeys = Array.from(shippingBuckets.keys()).sort((a, b) =>
+		a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)
+	);
+	const shippingGroups: DeliveryGroup[] = sortedShippingKeys.map((addressKey, index) => {
+		const itemIds = shippingBuckets.get(addressKey) ?? [];
+		const isDefault = addressKey === '';
+		// Match by resolved recipientAddressId (not the raw key) so an additional pile's
+		// own courier/method/shippingFee drafts survive a re-sync, exactly like a
+		// PickupLater branch's pickupDate/pickupTimeSlot above.
+		const existing = previous.find(
+			(g) =>
+				g.kind === DeliveryGroupKind.Shipping &&
+				(isDefault ? !g.recipientAddressId || g.addressGroupSeq === 1 : g.recipientAddressId === addressKey)
+		);
+		const destination = isDefault
+			? {
 					recipientName: ctx.recipientName,
 					recipientAddress: ctx.recipientAddress,
 					recipientAddressId: ctx.recipientAddressId
+				}
+			: {
+					recipientName: ctx.shippingAddresses?.find((a) => a.addressId === addressKey)?.recipientName,
+					recipientAddress: ctx.shippingAddresses?.find((a) => a.addressId === addressKey)
+						?.recipientAddress,
+					recipientAddressId: addressKey
 				};
-			case DeliveryGroupKind.PickupLater:
-				return { ...base, pickupStoreId: ctx.pickupStoreId };
-			case DeliveryGroupKind.Digital:
-				return {
-					...base,
-					shippingFee: 0,
-					recipientEmail: ctx.recipientEmail,
-					recipientPhone: ctx.recipientPhone
-				};
-			case DeliveryGroupKind.PickupInStore:
-			default:
-				return {
-					...base,
-					shippingFee: 0,
-					recipientAddress: undefined,
-					recipientAddressId: undefined
-				};
-		}
+		const splitReason = isDefault ? (isPlainDefault ? undefined : SplitReason.Fulfilment) : SplitReason.User;
+
+		return buildKindGroup(DeliveryGroupKind.Shipping, itemIds, existing, {
+			addressGroupSeq: index + 1,
+			locked: !isDefault ? false : !isPlainDefault,
+			splitReason,
+			marketplace,
+			subChannel: ctx.subChannel,
+			recipientEmail: ctx.recipientEmail,
+			recipientPhone: ctx.recipientPhone,
+			pickupStoreId: ctx.pickupStoreId,
+			...destination
+		});
+	});
+
+	const groups: DeliveryGroup[] = BASIC_CATEGORY_ORDER.flatMap((kind) => {
+		if (kind === DeliveryGroupKind.PickupLater) return pickupLaterGroups;
+		if (kind === DeliveryGroupKind.Shipping) return shippingGroups;
+		return plainGroups.filter((g) => g.kind === kind);
 	});
 
 	lastSyncedBuyerAddress = ctx.recipientAddress;
-	activeDeliveryGroupId.set(undefined);
 	deliveryGroups.set(groups);
 }
 
@@ -325,6 +444,11 @@ export function syncDeliveryGroups(
 		recipientPhone?: string;
 		/** Basic mode only — the branch the whole sale's PickupLater group collects from. */
 		pickupStoreId?: string;
+		/** Basic mode only — the display name/address of every additional "เพิ่มตัวเลือก
+		 *  รับสินค้า" Shipping pile's own address (seq 2+), keyed by its addressId (see
+		 *  TCartItem.lineAddressId / OpenFulfilmentPile.addressId). The sale's own default
+		 *  address (seq 1) still comes from recipientAddress/recipientName above. */
+		shippingAddresses?: { addressId: string; recipientName?: string; recipientAddress?: string }[];
 	}
 ): void {
 	// No backend actually emails a digital parcel yet — the cart's own promise
@@ -334,512 +458,11 @@ export function syncDeliveryGroups(
 	// commitDeliveryGroupsToOrder is already a no-op on an empty list. See feature-flags.ts.
 	if (!isMultiParcelEnabled()) {
 		deliveryGroups.set([]);
-		activeDeliveryGroupId.set(undefined);
 		lastSyncedBuyerAddress = undefined;
 		return;
 	}
 
-	// Basic mode (the default — see groupOrderMode) never runs the hard-split/origin/
-	// handover/user-group engine below at all: it splits ONLY by fulfilment category, one
-	// shared destination per category. The cashier opts into everything below this guard
-	// by calling enableGroupOrder.
-	if (!groupOrderActive) {
-		syncBasicGroups(items, ctx);
-		return;
-	}
-
-	// A service item (บริการห่อของขวัญ, ...) now rides in `shippableItems` same as
-	// everything else — it is no longer dropped from grouping entirely, it is hard-split
-	// into its own locked OnSite group below (step 1.5), same footing as Digital. It
-	// must still be excluded from every OTHER step (origin-grouping, handover, default
-	// group) — that exclusion runs through `assignedItemIds`, claimed by the service
-	// hard-split step before any of those steps run, same mechanism Digital already uses.
-	const shippableItems = items;
-
-	// A digital item can never be handed over a counter — an email is its only
-	// destination — so its presence forces a split at ANY fulfilment type, not only a
-	// delivery. Computed before the early return so a walk-in sale carrying one digital
-	// item still builds groups instead of being waved through by `!ctx.isDelivery`.
-	const digitalItems = shippableItems.filter(
-		(i) => itemFulfilmentOf(i.fulfilmentType) === ItemFulfilmentType.Digital
-	);
-
-	// A service item is performed at the customer's site — a new one is still suggested
-	// into its own OnSite group at any fulfilment type (step 1.25 below), even though
-	// that group is no longer locked.
-	const serviceItems = shippableItems.filter((i) => isServiceItem(i.fulfilmentType));
-
-	// An OnSite SALE needs its own destination+fee the same way a Shipping one does, even
-	// when nothing in the cart is literally flagged "service" — the cashier picked this
-	// fulfilment type for the whole sale, not per item. Without this carve-out, an OnSite
-	// sale of ordinary physical items would fall through this guard and build no groups
-	// at all (ctx.isDelivery is false for OnSite — no courier — and no item is "service").
-	const isOnSiteSale = ctx.fulfilmentType === FullfilmentType.OnSite;
-
-	// `shippableItems`, not `items` — only relevant now when the cart is genuinely empty,
-	// since service items no longer drop out of shippableItems above. Checking
-	// `items.length` here would let a lone gift-wrap sale build an empty parcel that then
-	// has to be specially ignored everywhere else instead.
-	if (
-		shippableItems.length === 0 ||
-		(!ctx.isDelivery &&
-			!isOnSiteSale &&
-			digitalItems.length === 0 &&
-			serviceItems.length === 0 &&
-			!groupOrderActive)
-	) {
-		deliveryGroups.set([]);
-		activeDeliveryGroupId.set(undefined);
-		lastSyncedBuyerAddress = undefined;
-		groupOrderActive = false;
-		groupOrderMode.set(false);
-		return;
-	}
-
-	const previous = get(deliveryGroups);
-	// Lines that sat in no parcel on the previous sync are the ones just added to the
-	// cart. Grouping now keys by lineId, not product_id: a genuinely new LINE (its own
-	// lineId, however familiar the product) always follows the active parcel, even when
-	// another line of the same product already sits elsewhere — that's the whole point
-	// of forceNewLine in AddCartItem. Only a qty bump on an EXISTING line (same lineId)
-	// stays put.
-	const previouslyGrouped = new Set(previous.flatMap((g) => g.itemIds));
-	const activeId = get(activeDeliveryGroupId);
-	const cartItemIds = new Set(shippableItems.map((i) => i.lineId).filter((id): id is string => !!id));
-	const assignedItemIds = new Set<string>();
-	const groups: DeliveryGroup[] = [];
-
-	// The kind every non-digital (physical) group in this sale takes — the default
-	// group and every per-origin locked group alike. An item from a minority origin is
-	// still collected the same way the rest of the sale is (counter or courier), never
-	// its own courier trip just because it came from another branch.
-	const physicalKind = physicalKindFor(ctx.fulfilmentType, ctx.isDelivery);
-	const isShippingKind = physicalKind === DeliveryGroupKind.Shipping;
-	// Shipping and OnSite both need a real address — only the two pickup kinds don't.
-	// Kept separate from isShippingKind (which still means "has a courier/shipping type
-	// to pick", OnSite has neither) so clearing logic below can ask the right question.
-	const needsAddressKind = isShippingKind || physicalKind === DeliveryGroupKind.OnSite;
-
-	// 1) Digital items can never ride with a parcel — always their own locked group.
-	if (digitalItems.length > 0) {
-		const existing = previous.find((g) => g.kind === DeliveryGroupKind.Digital);
-		groups.push({
-			...(existing ?? newDeliveryGroup()),
-			kind: DeliveryGroupKind.Digital,
-			locked: true,
-			splitReason: SplitReason.Product,
-			shippingFee: 0,
-			itemIds: digitalItems.map((i) => i.lineId!),
-			recipientEmail: ctx.recipientEmail
-		});
-		digitalItems.forEach((i) => assignedItemIds.add(i.lineId!));
-	}
-
-	// 1.25) Service items are performed AT the customer's site — a GENUINELY NEW one is
-	// suggested into its own OnSite group the moment it's added, same instinct as Digital's
-	// hard split, EXCEPT it is never locked: a regular product and a service line can be
-	// split apart or combined freely by drag-and-drop, same as any two physical items
-	// (FULFILLMENT_LOGIC.md §2.4 — a service item forces its HOST group toward on-site, it
-	// does not forever own a group of its own). `previouslyGrouped` is the signal that
-	// tells the two cases apart: a service item seen in some group on the LAST sync —
-	// whether that's this OnSite bucket or one the cashier dragged it into — is left
-	// exactly where it already is; only a line that has never been placed anywhere before
-	// gets the initial nudge. Falling through unclaimed here is deliberate: steps 2/4 below
-	// already know how to preserve an unclaimed item in its current group like any
-	// ordinary product, once it's no longer "new."
-	const onSiteExisting = previous.find(
-		(g) => g.kind === DeliveryGroupKind.OnSite && g.splitReason === SplitReason.Product
-	);
-	const onSiteSurvivingItemIds = (onSiteExisting?.itemIds ?? []).filter(
-		(id) => cartItemIds.has(id) && !assignedItemIds.has(id)
-	);
-	const newServiceItemIds = serviceItems
-		.map((i) => i.lineId!)
-		.filter((id) => !previouslyGrouped.has(id) && !assignedItemIds.has(id));
-	const onSiteItemIds = [...onSiteSurvivingItemIds, ...newServiceItemIds];
-	if (onSiteItemIds.length > 0) {
-		groups.push({
-			...(onSiteExisting ?? newDeliveryGroup()),
-			kind: DeliveryGroupKind.OnSite,
-			locked: false,
-			splitReason: SplitReason.Product,
-			itemIds: onSiteItemIds,
-			recipientName: ctx.recipientName,
-			recipientAddress: ctx.recipientAddress,
-			recipientAddressId: ctx.recipientAddressId
-		});
-		onSiteItemIds.forEach((id) => assignedItemIds.add(id));
-	}
-
-	// 1.5) "รับบางส่วน" — lines the cashier has already flipped to "รับเลยที่เคาน์เตอร์"
-	// leave the shipment before origin ever gets a say: a line that's physically being
-	// handed across the counter needs no origin parcel of its own, no matter which
-	// warehouse it happens to have come from. Gated on isDelivery/allowPartialReceive
-	// because pickup and pickup-later sales have no "shipped" side for a line to opt out
-	// of in the first place — every line there is already collected in person.
-	if (ctx.allowPartialReceive && ctx.isDelivery) {
-		const handoverItems = shippableItems.filter(
-			(i) =>
-				!assignedItemIds.has(i.lineId!) &&
-				receiveModeOf(i.receiveMode) === ReceiveMode.Now &&
-				canReceiveNow(i, { sellingOriginId: ctx.sellingOriginId })
-		);
-		// A line that fails canReceiveNow (foreign origin, digital slipped through, ...)
-		// falls through to shipping instead of erroring — the cart UI already disables
-		// its ▲ toggle for exactly these lines, so reaching here with receiveMode 'now'
-		// means stale state, not a real cashier choice, and shipping is the safe side to
-		// default to (see receiveModeOf).
-		if (handoverItems.length > 0) {
-			const existing = previous.find((g) => g.splitReason === SplitReason.Receive);
-			groups.push({
-				...(existing ?? newDeliveryGroup()),
-				kind: DeliveryGroupKind.PickupInStore,
-				locked: true,
-				splitReason: SplitReason.Receive,
-				shippingFee: 0,
-				itemIds: handoverItems.map((i) => i.lineId!),
-				// This group may have been a Shipping default/origin parcel on an earlier
-				// sync (before these lines were marked "now") — it must not keep an address
-				// it no longer has any use for, same reasoning the origin and default steps
-				// below already apply to their own groups.
-				recipientAddress: undefined,
-				recipientAddressId: undefined
-			});
-			handoverItems.forEach((i) => assignedItemIds.add(i.lineId!));
-		}
-	}
-
-	// 2) Everything not digital (and not service — already dropped above) is grouped by
-	// origin. The majority origin rides in the default group below; every minority
-	// origin gets its own locked group — the cashier never chose this split, the
-	// warehouse layout did.
-	const nonDigitalItems = shippableItems.filter((i) => !assignedItemIds.has(i.lineId!));
-	const originCounts = new Map<string, number>();
-	nonDigitalItems.forEach((i) => {
-		if (i.originId) originCounts.set(i.originId, (originCounts.get(i.originId) ?? 0) + 1);
-	});
-	let majorityOriginId: string | undefined;
-	let majorityCount = -1;
-	originCounts.forEach((count, originId) => {
-		if (count > majorityCount) {
-			majorityCount = count;
-			majorityOriginId = originId;
-		}
-	});
-
-	[...originCounts.keys()]
-		.filter((originId) => originId !== majorityOriginId)
-		.forEach((originId) => {
-			const originItems = nonDigitalItems.filter((i) => i.originId === originId);
-			const existing = previous.find(
-				(g) => g.splitReason === SplitReason.Origin && g.originId === originId
-			);
-			groups.push({
-				...(existing ?? newDeliveryGroup()),
-				kind: physicalKind,
-				locked: true,
-				splitReason: SplitReason.Origin,
-				originId,
-				originName: originItems[0]?.originName,
-				itemIds: originItems.map((i) => i.lineId!),
-				// A pickup parcel has no shipping destination — clear whatever an earlier
-				// sync (back when this group was still Shipping/OnSite) may have left behind.
-				...(needsAddressKind ? {} : { recipientAddress: undefined, recipientAddressId: undefined })
-			});
-			originItems.forEach((i) => assignedItemIds.add(i.lineId!));
-		});
-
-	// 3) User-made (soft split) groups keep their identity and whichever of their
-	// items are still in the cart. Never re-populated automatically — a soft split
-	// only holds what the cashier explicitly moved into it. Hard splits above take
-	// priority: an item claimed by a locked group above no longer counts here even if
-	// it used to sit in this user group (see §3 "hard split ขึ้นก่อน").
-	previous
-		.filter((g) => g.splitReason === SplitReason.User)
-		.forEach((g) => {
-			const survivingItemIds = g.itemIds.filter(
-				(id) => cartItemIds.has(id) && !assignedItemIds.has(id)
-			);
-			// An empty soft split used to auto-collapse right here (§4 S4 "กลุ่มว่างต้องยุบ
-			// เอง"), which is exactly what made "+ แยกพัสดุเพิ่ม" look broken: the cashier
-			// adds a parcel, this sync runs on the very next cart tick, and it disappears
-			// before they can move anything into it. The group is the cashier's to keep or
-			// delete now (see removeUserDeliveryGroup below) — sync no longer decides that
-			// for them just because it happens to be empty at this instant.
-			// A product tapped while this parcel is the active one joins it. The hard splits
-			// above already claimed whatever they own (digital, handover, minority origin), so
-			// those never reach here and the no-mixing rules still hold.
-			const arrivingItemIds =
-				g.id === activeId
-					? shippableItems
-							.map((i) => i.lineId!)
-							.filter((id) => !previouslyGrouped.has(id) && !assignedItemIds.has(id))
-					: [];
-			const memberIds = [...survivingItemIds, ...arrivingItemIds];
-			groups.push({ ...g, itemIds: memberIds });
-			memberIds.forEach((id) => assignedItemIds.add(id));
-		});
-
-	// 4) Whatever is left — the common case with zero splits — lands in the one
-	// default group, carrying the recipient the cashier already picked for the sale.
-	const defaultItemIds = shippableItems
-		.map((i) => i.lineId!)
-		.filter((id) => !assignedItemIds.has(id));
-	if (defaultItemIds.length > 0) {
-		const existing = previous.find((g) => !g.locked && g.splitReason === undefined);
-		// The default parcel follows the sale's buyer address — but only when that
-		// address itself changed. Re-stamping it on every sync would silently undo an
-		// address the cashier set on this parcel in the drawer the next time anything
-		// else moved (a qty edit is enough), which is the one kind of data loss this
-		// feature cannot afford: they would pay for a parcel going somewhere else.
-		const buyerAddressChanged = ctx.recipientAddress !== lastSyncedBuyerAddress;
-		const keepChosenRecipient = !!existing && !buyerAddressChanged;
-
-		groups.push({
-			...(existing ?? newDeliveryGroup()),
-			kind: physicalKind,
-			locked: false,
-			splitReason: undefined,
-			itemIds: defaultItemIds,
-			...(keepChosenRecipient
-				? {}
-				: {
-						recipientName: ctx.recipientName,
-						recipientAddress: ctx.recipientAddress,
-						recipientAddressId: ctx.recipientAddressId
-					}),
-			// A pickup parcel is collected in person, not shipped to the buyer's address —
-			// stamped last so it wins over both the spread above and keepChosenRecipient,
-			// otherwise a sale that flips from ShopDelivery to PickupImmediate would keep
-			// showing the address it shipped to a moment ago. OnSite keeps its address too
-			// (needsAddressKind), same reasoning as Shipping — only the two pickup kinds
-			// genuinely have no destination to fill.
-			...(needsAddressKind ? {} : { recipientAddress: undefined, recipientAddressId: undefined })
-		});
-	}
-
-	lastSyncedBuyerAddress = ctx.recipientAddress;
-
-	if (activeId && !groups.some((g) => g.id === activeId)) {
-		activeDeliveryGroupId.set(undefined);
-	}
-	deliveryGroups.set(groups);
-}
-
-export function addUserDeliveryGroup(kind: DeliveryGroupKind = DeliveryGroupKind.Shipping): string {
-	// A digital parcel is a hard split the sync engine owns (step 1 of syncDeliveryGroups)
-	// — it exists because an item forces it, never because the cashier chose to make one.
-	// Falling back to Shipping keeps that invariant even if a caller passes Digital here.
-	const resolvedKind = kind === DeliveryGroupKind.Digital ? DeliveryGroupKind.Shipping : kind;
-	const group = newDeliveryGroup({
-		kind: resolvedKind,
-		splitReason: SplitReason.User,
-		locked: false
-	});
-	deliveryGroups.update((groups) => [...groups, group]);
-	return group.id;
-}
-
-/**
- * The cashier's own entry point into a group order. Three things happen together, in
- * this order, because each depends on the one before it:
- *
- * 1. groupOrderActive flips true FIRST — syncDeliveryGroups' early-return guard checks
- *    it, so a pickup/pickup-later sale with no digital item (which otherwise builds no
- *    groups at all, see that guard) must already be past it before the next step can
- *    build anything.
- * 2. syncDeliveryGroups runs right here, synchronously, with the sale's current
- *    items/ctx — this is what actually materializes whatever is ALREADY in the cart
- *    into its own group. Without this, that cart content would stay invisible (zero
- *    delivery groups) until some unrelated cart edit happened to trigger Cart.svelte's
- *    own reactive sync on its own, leaving the cashier looking at an empty group-order
- *    screen right after asking for one.
- * 3. The group that sync just built for those items — the sale's own "no reason to be
- *    split yet" bucket (locked: false, splitReason: undefined) — is promoted to
- *    SplitReason.User. The cashier is choosing, right now, to treat their existing
- *    items as one of several named groups ("กลุ่ม 1"), not leave them in an anonymous,
- *    non-removable, kind-locked leftover bucket beside the new group being added.
- *
- * A plain hard-split (digital item, mixed origin) never needs any of this: it already
- * forces its own locked group regardless of fulfilment, with nothing to promote.
- *
- * Entering from BASIC mode (the common case now — see groupOrderMode) is a 0th step
- * ahead of all three above: basic mode may already have built several category groups
- * (Shipping/OnSite/PickupLater/PickupInStore) before the cashier ever asked for a group
- * order. Those must become the starting groups, not get discarded in favour of a single
- * re-merged default — each becomes a cashier-reassignable (soft-split) group of its own,
- * exactly as if the cashier had made it by hand. Digital is the one exception: it stays a
- * hard split in advanced mode too (never a cashier pick), so it is left exactly as-is.
- */
-export function enableGroupOrder(
-	items: TCartItem[],
-	ctx: Parameters<typeof syncDeliveryGroups>[1],
-	kind?: DeliveryGroupKind
-): string {
-	if (!groupOrderActive) {
-		const basicGroups = get(deliveryGroups);
-		if (basicGroups.length > 0) {
-			deliveryGroups.set(
-				basicGroups.map((g) =>
-					g.kind === DeliveryGroupKind.Digital
-						? g
-						: { ...g, splitReason: SplitReason.User, locked: false }
-				)
-			);
-		}
-	}
-	groupOrderActive = true;
-	groupOrderMode.set(true);
-	syncDeliveryGroups(items, ctx);
-	deliveryGroups.update((groups) =>
-		groups.map((g) =>
-			!g.locked && g.splitReason === undefined ? { ...g, splitReason: SplitReason.User } : g
-		)
-	);
-	return addUserDeliveryGroup(kind);
-}
-
-export function moveItemToGroup(itemId: string, targetGroupId: string): void {
-	deliveryGroups.update((groups) => {
-		const source = groups.find((g) => g.itemIds.includes(itemId));
-		const target = groups.find((g) => g.id === targetGroupId);
-		// Locked groups are not a cashier decision on either end: you cannot pull an
-		// item out of one (it would break why the split exists) and you cannot drop
-		// one into another (the wireframe shows locked destinations disabled, §4 S4).
-		if (!source || !target || source.locked || target.locked || source.id === target.id) {
-			return groups;
-		}
-
-		return groups
-			.map((g) => {
-				if (g.id === source.id) {
-					return { ...g, itemIds: g.itemIds.filter((id) => id !== itemId) };
-				}
-				if (g.id === target.id) {
-					return { ...g, itemIds: [...g.itemIds, itemId] };
-				}
-				return g;
-			})
-			// A user split survives even when this move empties it out — same reasoning as
-			// step 3 of syncDeliveryGroups: it is the cashier's parcel to delete explicitly
-			// (removeUserDeliveryGroup), not something this move silently erases the moment
-			// its last item leaves. Only the (hypothetical, never actually built today) case
-			// of an unnamed, non-locked, non-user group collapses when emptied.
-			.filter((g) => g.locked || g.splitReason === SplitReason.User || g.itemIds.length > 0);
-	});
-}
-
-// A removed user group's items must land somewhere — prefer the default parcel (the
-// sale's "no reason to be split" bucket, since that is where they would have sat had the
-// cashier never split them out) and fall back to any other non-locked group otherwise.
-// Returns undefined only when every other group is locked, i.e. the cart is 100%
-// hard-split and there is nowhere for these items to go without breaking a hard split.
-const findReceiverGroup = (
-	groups: DeliveryGroup[],
-	group: DeliveryGroup
-): DeliveryGroup | undefined => {
-	const byDefault = groups.find(
-		(g) => g.id !== group.id && !g.locked && g.splitReason === undefined
-	);
-	if (byDefault) return byDefault;
-	return groups.find((g) => g.id !== group.id && !g.locked);
-};
-
-export interface RemovedDeliveryGroup {
-	group: DeliveryGroup;
-	/** position in the store array, so an undo can put it back where it was. */
-	index: number;
-	/** the parcel its items were merged into; undefined when it was empty. */
-	targetGroupId?: string;
-}
-
-/** Pure predicate — the UI disables its ลบ button with exactly this rule. */
-export function canRemoveDeliveryGroup(groups: DeliveryGroup[], id: string): boolean {
-	const group = groups.find((g) => g.id === id);
-	// Only a cashier-made soft split is theirs to delete — a hard split exists for a
-	// reason the cashier did not choose, and the default parcel is not "a split" at all.
-	if (!group || group.locked || group.splitReason !== SplitReason.User) return false;
-	// Nothing to relocate, so nothing can block the removal.
-	if (group.itemIds.length === 0) return true;
-	// A group holding items can only go if somewhere else can take them — the items must
-	// end up living in SOME parcel, never vanish along with the group that held them.
-	return !!findReceiverGroup(groups, group);
-}
-
-/**
- * Deletes a cashier-made parcel. Its items (if any) are folded into the group
- * `findReceiverGroup` picks, so nothing the cashier already put in the cart disappears
- * along with the parcel it was sitting in. Refuses (returns undefined, no state change)
- * exactly where `canRemoveDeliveryGroup` says no — a locked/default group, or a group
- * with items and no receiver to take them.
- */
-export function removeUserDeliveryGroup(id: string): RemovedDeliveryGroup | undefined {
-	const groups = get(deliveryGroups);
-	if (!canRemoveDeliveryGroup(groups, id)) return undefined;
-
-	const index = groups.findIndex((g) => g.id === id);
-	const group = groups[index];
-	if (get(activeDeliveryGroupId) === id) activeDeliveryGroupId.set(undefined);
-	const receiver =group.itemIds.length > 0 ? findReceiverGroup(groups, group) : undefined;
-
-	const nextGroups = groups
-		.filter((g) => g.id !== id)
-		.map((g) =>
-			receiver && g.id === receiver.id ? { ...g, itemIds: [...g.itemIds, ...group.itemIds] } : g
-		);
-	deliveryGroups.set(nextGroups);
-	// Mirrors the reference pattern's "dropping back to 1 group exits group mode
-	// automatically" — without this, a pickup sale that soft-split down to just its
-	// default group again would stay (wrongly) exempt from the early-return guard in
-	// syncDeliveryGroups forever, via a stale groupOrderActive from earlier in this sale.
-	if (nextGroups.length <= 1) {
-		groupOrderActive = false;
-		groupOrderMode.set(false);
-	}
-
-	return { group, index, targetGroupId: receiver?.id };
-}
-
-/**
- * Undoes `removeUserDeliveryGroup` — puts the group back where it was and pulls its
- * items back out of whichever group they got merged into. A no-op if a group with this
- * id already exists (e.g. a stale undo fired after the cashier already recreated it by
- * hand), so callers can invoke it freely from a toast action without re-checking state.
- */
-export function restoreDeliveryGroup(removed: RemovedDeliveryGroup): void {
-	deliveryGroups.update((groups) => {
-		if (groups.some((g) => g.id === removed.group.id)) return groups;
-
-		const removedItemIds = new Set(removed.group.itemIds);
-		// Strip the restored items back out of the receiver — they belong to the parcel
-		// being restored again, not to both places at once.
-		const withoutMergedItems = groups.map((g) =>
-			g.id === removed.targetGroupId
-				? { ...g, itemIds: g.itemIds.filter((itemId) => !removedItemIds.has(itemId)) }
-				: g
-		);
-
-		const insertAt = Math.min(removed.index, withoutMergedItems.length);
-		const restored = [
-			...withoutMergedItems.slice(0, insertAt),
-			removed.group,
-			...withoutMergedItems.slice(insertAt)
-		];
-
-		// If pulling those items back out left the receiver empty, drop it under the same
-		// rule moveItemToGroup and syncDeliveryGroups use: only a locked or user-split
-		// group is allowed to stay empty, so this undo doesn't strand a bare default group.
-		const result = restored.filter(
-			(g) => g.locked || g.splitReason === SplitReason.User || g.itemIds.length > 0
-		);
-		// Undoing a removal that brought the sale back above 1 group must re-arm the same
-		// flag removeUserDeliveryGroup clears on the way down — otherwise a pickup sale's
-		// next unrelated cart edit (syncDeliveryGroups runs on every cart change) would wipe
-		// the just-restored split right back out.
-		groupOrderActive = result.length > 1;
-		groupOrderMode.set(groupOrderActive);
-		return result;
-	});
+	syncBasicGroups(items, ctx);
 }
 
 export function updateDeliveryGroup(id: string, patch: Partial<DeliveryGroup>): void {
@@ -848,10 +471,7 @@ export function updateDeliveryGroup(id: string, patch: Partial<DeliveryGroup>): 
 
 export function resetDeliveryGroups(): void {
 	deliveryGroups.set([]);
-	activeDeliveryGroupId.set(undefined);
 	lastSyncedBuyerAddress = undefined;
-	groupOrderActive = false;
-	groupOrderMode.set(false);
 }
 
 /**
@@ -879,8 +499,9 @@ export function commitDeliveryGroupsToOrder(): void {
 		method: withMethod?.method ?? current?.method,
 		type: withMethod?.shippingType ?? current?.type,
 		remark: current?.remark,
-		// Never let an unresolved fee collapse to ฿0 in the order total (§6).
-		...(summary.feeUnknown ? {} : { shippingFee: summary.totalFee })
+		// A fee the cashier never set is ฿0, same as everywhere else this is read — no
+		// longer special-cased to stay unset (see isGroupFulfilmentComplete's own comment).
+		shippingFee: summary.totalFee
 	};
 
 	setDelivery(delivery);

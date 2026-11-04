@@ -5,9 +5,11 @@
 		cartListInfo,
 		GetExistingCart
 	} from '$stores/cart/cart';
-	import { afterUpdate, onDestroy, onMount } from 'svelte';
+	import { afterUpdate, onDestroy, onMount, getContext } from 'svelte';
 	import { get } from 'svelte/store';
+	import type { ToastStore } from '@sellsuki-org/sellsuki-components';
 	import CartItem from './CartItem.svelte';
+	import FulfilmentMenu from './FulfilmentMenu.svelte';
 	import CartFulfilmentPiles from './CartFulfilmentPiles.svelte';
 	import EmptyCart from './EmptyCart.svelte';
 	import CartFooter from './CartFooter.svelte';
@@ -22,6 +24,7 @@
 		FullfilmentType,
 		newPartyInfo,
 		type PartyInfo,
+		PaymentType,
 		SaleChannelType,
 		SaleChannelUI,
 		saleChannelToPayload,
@@ -29,6 +32,7 @@
 		salesChannels,
 		sameDayDeliveries,
 		standardDeliveries,
+		vehicleTypes,
 		ShippingType,
 		type DeliveryOption
 	} from '$lib/entities/order/order';
@@ -38,52 +42,56 @@
 		clearOrderMeta,
 		orderData,
 		setPartyInfoToOrder,
+		setPaymentType,
 		setSalesChannel
 	} from '$stores/order/order';
 	import { orderDeliveryI18nKey } from '$utils/i18n-keys';
 	import { countriesList } from '$stores/country';
 	import DrawerCustomerAddress from './section/DrawerCustomerAddress.svelte';
-	import DrawerOnline from './section/DrawerOnline.svelte';
 	import ModalPickupBranch from './section/ModalPickupBranch.svelte';
+	import ModalAddPileAddress from './section/ModalAddPileAddress.svelte';
+	import PickList from './section/PickList.svelte';
+	import PickCard from './section/PickCard.svelte';
 	import { currentCompany } from '$stores/company/current-company';
 	import { currentStore } from '$stores/store/current-store';
 	import { addressToDisplay } from '$utils/format-address';
 	import { maskPhoneMiddle } from '$utils/format-phone';
 	import { formatPriceWithBath } from '$utils/format-number';
 	import type { Store } from '$lib/entities/store/store';
-	import DrawerDelivery from './section/DrawerDelivery.svelte';
-	import DeliveryGroupCards from './section/DeliveryGroupCards.svelte';
-	import Modal from '$components/modal/Modal.svelte';
 	import {
-		activeDeliveryGroupId,
 		deliveryGroups,
 		deliverySummary,
-		enableGroupOrder,
-		groupOrderMode,
-		hasSplitDelivery,
 		physicalKindFor,
-		showDeliveryDetail,
 		resetDeliveryGroups,
-		setActiveDeliveryGroup,
 		syncDeliveryGroups,
 		updateDeliveryGroup
 	} from '$stores/order/delivery-group';
 	import {
 		DeliveryGroupKind,
 		ItemFulfilmentType,
+		displayKindOf,
 		handoverItemQty,
 		isMarketplaceChannel,
 		itemFulfilmentOf,
-		kindNeedsShippingMethod,
 		basicCategoryLabel,
-		groupKindIcon,
 		type DeliveryGroup
 	} from '$lib/entities/order/delivery-group';
 	import { isMultiParcelEnabled } from '$lib/feature-flags';
-	import { ResetPhysicalLineFulfilment } from '$stores/cart/cart';
+	import {
+		ResetPhysicalLineFulfilment,
+		SetCartItemPickupStore,
+		SetCartItemAddressId,
+		addOpenFulfilmentPile,
+		activeFulfilmentPile,
+		openFulfilmentPiles,
+		removeOpenFulfilmentPile,
+		setActiveFulfilmentPile
+	} from '$stores/cart/cart';
 
 	export let buyer: PartyInfo | undefined;
 	export let fullfilmentType: string;
+
+	const toastStore = getContext<ToastStore>('toast');
 
 	var total: number = 0;
 	var discount: number = 0;
@@ -92,41 +100,61 @@
 	// One drawer holds customer + address; this only decides which half it lands on.
 	let showDrawerCustomer: boolean = false;
 	let customerDrawerOpenOn: 'customer' | 'address' = 'customer';
-	let showDrawerOnlineChannel: boolean = false;
 	let showPickupModal: boolean = false;
-	let showDeliveryDrawer: boolean = false;
-	let openMethodGroupId: string | undefined;
-	// Set only when the cashier hit "เลือกที่อยู่จัดส่ง" on a parcel in DrawerDelivery
-	// while no customer was picked yet — onCreateAddress(groupId) below stashes which
-	// parcel asked, closes that drawer and sends the cashier to pick a customer first.
-	// The moment a selectedAddress exists afterwards (new customer's own default, or one
-	// the cashier just picked), this parcel gets stamped with it automatically and the
-	// cashier is dropped back into the delivery drawer instead of having to open it again
-	// and pick the very address they just set.
-	let pendingAddressGroupId: string | undefined;
 	// Where the customer will collect a pick-up-later order. The company's branches are
 	// already in memory from the company load, so the picker needs no extra request.
 	let pickupStoreId: string = '';
 	// DigitalDelivery only makes sense when every line in the cart is a digital product —
 	// offering it otherwise would promise an email-only sale for items that still need a
 	// physical destination. OnSite has no such gate; any POS sale can dispatch staff out.
+	$: isAllDigitalCart =
+		cartList?.length > 0 &&
+		cartList.every((i) => itemFulfilmentOf(i.fulfilmentType) === ItemFulfilmentType.Digital);
 	$: fullfilmentOptions = [
 		FullfilmentType.PickupImmediate,
 		FullfilmentType.PickupLater,
 		FullfilmentType.ShopDelivery,
 		FullfilmentType.OnSite,
-		...(cartList?.length > 0 &&
-		cartList.every((i) => itemFulfilmentOf(i.fulfilmentType) === ItemFulfilmentType.Digital)
-			? [FullfilmentType.DigitalDelivery]
-			: [])
+		...(isAllDigitalCart ? [FullfilmentType.DigitalDelivery] : [])
 	];
+	// The cashier never has to find "จัดส่งเข้าระบบ (ดิจิทัล)" by hand — the moment the cart
+	// goes all-digital (the same isAllDigitalCart gate fullfilmentOptions itself uses), the
+	// sale's own fulfilment type follows automatically, same as every digital LINE already
+	// force-resolves into its own Digital group regardless of what's picked here (see
+	// resolveLineKind). Deliberately skips handleSelectOption's own ResetPhysicalLineFulfilment
+	// — there's no physical line left to reset while this is true, and switching back out
+	// (a physical item added back in) must not wipe any open piles the cashier already set
+	// up for OTHER physical lines sitting beside it. Only POS shows this dropdown at all —
+	// online/ลิงก์ already resolve a digital line into its own group the same way regardless
+	// of fullfilmentType, so this would be a no-op write there anyway, best left undone.
+	$: if (isPos && cartList?.length > 0) {
+		if (isAllDigitalCart && fullfilmentType !== FullfilmentType.DigitalDelivery) {
+			fullfilmentType = FullfilmentType.DigitalDelivery;
+			setSalesChannel({
+				...$orderData.saleChannel,
+				saleOrigin: FullfilmentType.DigitalDelivery,
+				type: SaleChannelType.Offline
+			});
+		} else if (!isAllDigitalCart && fullfilmentType === FullfilmentType.DigitalDelivery) {
+			// No longer all-digital — DigitalDelivery just stopped being a legal choice (see
+			// fullfilmentOptions' own gate), so fall back to the ordinary pickup-now default
+			// rather than leaving a now-invalid type selected.
+			fullfilmentType = FullfilmentType.PickupImmediate;
+			setSalesChannel({
+				...$orderData.saleChannel,
+				saleOrigin: FullfilmentType.PickupImmediate,
+				type: SaleChannelType.Offline
+			});
+		}
+	}
 	// The channel / fulfilment / customer block collapses to a one-line summary so the
 	// list gets the space back. A view toggle, not a data change: nothing selected is
 	// cleared, and the collapsed strip states what it is holding, so the cashier can
 	// still read the sale's context — and click it to open the block again.
 	let topCollapsed = false;
-	// LINE OA is the spec's default sub-channel for an online sale.
-	const DEFAULT_SUB_CHANNEL = 'line';
+	// "ไม่ระบุ" (unknown) is the default sub-channel for an online sale — the cashier picks
+	// a real one explicitly rather than it defaulting to a specific platform.
+	const DEFAULT_SUB_CHANNEL = 'unknown';
 	// OMS 2.0 names the three channels POS / ONLINE / LINK_BILL and puts them on the top
 	// row of the cart; the old two-value index could not express the third one.
 	let channel: SaleChannelUI = SaleChannelUI.Pos;
@@ -185,38 +213,119 @@
 	// The branch ringing up the sale is the sane default: most customers come back to
 	// the shop they bought from.
 	$: if (!pickupStoreId && $currentStore?.id) pickupStoreId = $currentStore.id;
-	$: pickupBranch = branches.find((b) => b.id === pickupStoreId);
-	// Legacy single-group gate, kept for the advanced-mode drawer paths below;
-	// basic mode's own destination section drives off hasPickupLater instead (online
-	// sales can land a PickupLater category too, e.g. B4-like flows).
-	$: needsPickupBranch = $groupOrderMode && isPos && fullfilmentType === FullfilmentType.PickupLater;
-	// ShopDelivery/OnSite both need a destination + a fee, same as their own per-group
-	// card already does inside the drawer — shown even for the ordinary, unsplit sale
-	// (today's showDeliveryDetail/zero-cost path hides ALL delivery UI until a real split
-	// or a digital item exists, which left these two fulfilment types with nowhere to
-	// confirm an address/fee at all until the cashier happened to open the drawer some
-	// other way).
-	// Old single-group drawer trigger — superseded by the basic-mode destination section
-	// below whenever basic mode is active; kept for the advanced group-order path.
-	$: needsDeliveryInfo =
-		$groupOrderMode &&
-		isPos &&
-		(fullfilmentType === FullfilmentType.ShopDelivery || fullfilmentType === FullfilmentType.OnSite);
+	// A digital line never gets its own fulfilment-info card — it displays as "รับทันที"
+	// (same rule CartFulfilmentPiles uses for the cart list itself), its contact-info
+	// validation riding along on that merged card instead. displayKinds is presentKinds
+	// (the real, group-backed kinds everything else below still reasons about) collapsed
+	// through that same rule, deduped.
+	$: displayKinds = Array.from(new Set(presentKinds.map(displayKindOf)));
+	// A single present kind needs its one relevant field shown inline, not the generic
+	// multi-kind settings drawer (opened per-pile now, via CartFulfilmentPiles' own
+	// settings button — see onEditPile/openEditingKind). presentKinds already falls back to
+	// a one-element array for an unsplit sale, so this also covers the ordinary,
+	// non-group-order cart.
+	$: singleKind = displayKinds.length === 1 ? displayKinds[0] : undefined;
+	// Mirrors CartFulfilmentPiles' own `buckets.length` exactly (same branch/address-key
+	// sets) — computed independently here off the same stores/items rather than threaded through as
+	// a prop, since Cart.svelte already reads every input that computation needs. "รูปแบบ
+	// การรับสินค้า" above already states the sale's one kind whenever there's truly only one
+	// bucket, so that ONE bucket needs no badge of its own repeating it — its settings move
+	// to the inline rows below instead. The moment a SECOND bucket exists for ANY reason
+	// (another kind, or a second instance of the SAME kind via "เพิ่มตัวเลือกรับสินค้า"),
+	// CartFulfilmentPiles shows every bucket as a badge pile instead, so these inline rows
+	// must also stop showing then — gating on the TOTAL count (not per-kind) is what keeps
+	// the two components' decisions from ever disagreeing, unlike a per-kind version tried
+	// and reverted earlier.
+	$: pickupLaterBucketCount = new Set([
+		...itemsOfKind(DeliveryGroupKind.PickupLater).map((i) => i.linePickupStoreId ?? ''),
+		...$openFulfilmentPiles
+			.filter((p) => p.kind === DeliveryGroupKind.PickupLater)
+			.map((p) => p.pickupStoreId ?? '')
+	]).size;
+	$: shippingBucketCount = new Set([
+		...itemsOfKind(DeliveryGroupKind.Shipping).map((i) => i.lineAddressId ?? ''),
+		...$openFulfilmentPiles
+			.filter((p) => p.kind === DeliveryGroupKind.Shipping)
+			.map((p) => p.addressId ?? '')
+	]).size;
+	// PickupInStore and Digital are each their own bucket now (displayKindOf no longer
+	// folds Digital into PickupInStore) — counted separately so a cart with both รับทันที
+	// and a digital line correctly reads as 2 buckets, not 1.
+	$: totalBucketCount =
+		pickupLaterBucketCount +
+		shippingBucketCount +
+		(hasOnSite ? 1 : 0) +
+		(hasPickupInStore ? 1 : 0) +
+		(hasDigital ? 1 : 0);
+	$: isSingleBucket = totalBucketCount <= 1;
+	// The collapsed "รูปแบบการรับสินค้า" trigger must say what's actually IN the cart, not
+	// the sale's raw default — a line added through "เพิ่มตัวเลือกรับสินค้า" carries its own
+	// override, so whenever every line in the cart agrees on one kind, that kind is what
+	// this header shows, even if it differs from the sale's own default (fullfilmentType).
+	// Equal to fullfilmentType's own kind whenever nothing is overridden, so this is a
+	// pure display fix with no behaviour change in the common case. The dropdown's own
+	// `value`/option-highlighting below stays on the real fullfilmentType — only the
+	// collapsed summary borrows singleKind.
+	function fullfilmentTypeForKind(kind: DeliveryGroupKind): string {
+		switch (kind) {
+			case DeliveryGroupKind.PickupLater:
+				return FullfilmentType.PickupLater;
+			case DeliveryGroupKind.Shipping:
+				return FullfilmentType.ShopDelivery;
+			case DeliveryGroupKind.OnSite:
+				return FullfilmentType.OnSite;
+			case DeliveryGroupKind.Digital:
+				return FullfilmentType.DigitalDelivery;
+			case DeliveryGroupKind.PickupInStore:
+			default:
+				return FullfilmentType.PickupImmediate;
+		}
+	}
+	$: displayFullfilmentType = singleKind ? fullfilmentTypeForKind(singleKind) : fullfilmentType;
+	// Shipping/OnSite both need a destination + a fee, same as their own per-group card
+	// already does inside the drawer — shown even for the ordinary, unsplit sale (today's
+	// showDeliveryDetail/zero-cost path hides ALL delivery UI until a real split or a
+	// digital item exists, which left these two fulfilment types with nowhere to confirm
+	// an address/fee at all until the cashier happened to open the drawer some other way).
+	// Keyed off the resolved kind (not raw fullfilmentType) so this also covers an online
+	// sale, which always resolves to a Shipping-kind group via isDelivery/physicalKindFor
+	// regardless of what fullfilmentType happens to hold.
+	// Digital can never have more than one bucket (it's never split by branch/address the
+	// way รับภายหลัง/จัดส่ง can be) — combined with isSingleBucket where this is actually
+	// used, its own inline row only shows while Digital is the sale's ONLY bucket; the
+	// moment a second bucket exists for any reason, CartFulfilmentPiles' own Digital badge
+	// (see hasSettings) becomes the one place to manage it instead.
+	$: needsDigitalContact = hasDigital;
 	// The one-and-only group a plain, unsplit sale already has (syncDeliveryGroups' own
 	// "default group" step) — reused here instead of duplicating its address/fee fields.
 	$: singleDeliveryGroup = liveGroups[0];
-	// Safety net for DeliveryGroupCards' own remove button (the main-page cards, not this
-	// drawer) — DrawerDelivery.svelte already closes itself in the same tick it removes
-	// its own last group, but a removal from the cards behind it must close this drawer
-	// too, if it happened to be open at the same time.
-	$: if (showDeliveryDrawer && $deliveryGroups.length <= 1) showDeliveryDrawer = false;
 
 	function methodLabel(method?: string): string {
+		// Marketplace groups carry the literal 'platform' sentinel (see syncBasicGroups) —
+		// never a real courier value, so it needs its own label rather than falling through
+		// to the raw string.
+		if (method === 'platform') return `ตามแพลตฟอร์ม (${subChannelOption?.label ?? subChannel})`;
 		const found = [...standardDeliveries, ...sameDayDeliveries].find((o) => o.value === method);
 		return found?.label.replace(/<br\s*\/?>/gi, ' ') ?? method ?? '';
 	}
 
 	const onSelectPickupBranch = (branch: Store) => {
+		if (editingKind === DeliveryGroupKind.PickupLater && editingPickupStoreId) {
+			// A specific branch's pile is open (editingPickupStoreId is that branch's id) — only
+			// the lines actually sitting in THAT pile move to the newly picked branch; a
+			// different branch's own รับภายหลัง pile must not be touched by editing this one.
+			itemsOfKind(DeliveryGroupKind.PickupLater).forEach((item) => {
+				if (item.lineId && item.linePickupStoreId === editingPickupStoreId) {
+					SetCartItemPickupStore(item.lineId, branch.id);
+				}
+			});
+			editingPickupStoreId = branch.id;
+			return;
+		}
+		// No specific pile is being edited (the single-kind "สาขาที่รับสินค้า" inline row, or
+		// the sale-default pile with no branch override of its own) — updating the sale's own
+		// default branch is enough: a line with no override already falls back to it (see
+		// pickupLaterBranchIds above), and a line carrying its OWN explicit branch is untouched.
 		pickupStoreId = branch.id ?? pickupStoreId;
 	};
 
@@ -233,19 +342,6 @@
 			onClickSelectAddress(fallback);
 		}
 	}
-	// The parcel that sent the cashier off to pick a customer (see pendingAddressGroupId
-	// and onCreateAddress below) finally has an address to inherit — stamp it on without
-	// making the cashier open the drawer again and pick the very address they just set.
-	$: if (pendingAddressGroupId && selectedAddress) {
-		updateDeliveryGroup(pendingAddressGroupId, {
-			recipientAddressId: idAddress,
-			recipientAddress: addressToDisplay(selectedAddress),
-			recipientName: selectedAddress.contactName ?? buyer?.name
-		});
-		pendingAddressGroupId = undefined;
-		showDeliveryDrawer = true;
-	}
-
 	// A customer is mandatory unless the buyer walks out with the goods immediately.
 	// A customer is mandatory for every ONLINE / LINK_BILL sale, and for POS unless the
 	// buyer walks out with the goods immediately — and always once a digital or service
@@ -275,9 +371,6 @@
 	// ships; a new enum value would ride into saleChannel.saleOrigin with no backend
 	// behaviour behind it at all.
 	$: allowPartialReceive = isPos && fullfilmentType === FullfilmentType.ShopDelivery;
-	// Named (not inlined) so enableGroupOrder's own forced re-sync — createGroupOrder /
-	// addAnotherGroup below — can pass the exact same ctx the reactive statement already
-	// builds, instead of a second, driftable copy of these fields.
 	$: deliveryCtx = {
 		// The store's ctx field is spelled with one "l" (fulfilmentType); this component's
 		// own prop keeps the codebase's existing two-"l" spelling (fullfilmentType) — see
@@ -301,7 +394,18 @@
 		subChannel,
 		marketplace: isOnline && isMarketplaceChannel(subChannel),
 		recipientPhone: buyer?.phone,
-		pickupStoreId
+		pickupStoreId,
+		// "เพิ่มตัวเลือกรับสินค้า" Shipping piles (addressGroupSeq 2+) — their own
+		// recipientName/recipientAddress resolved from the customer's address book, since
+		// syncBasicGroups only ever receives ids/strings via ctx, never the Address list
+		// itself.
+		shippingAddresses: addresses
+			.filter((a) => !!a.id)
+			.map((a) => ({
+				addressId: String(a.id),
+				recipientName: a.contactName,
+				recipientAddress: addressToDisplay(a)
+			}))
 	};
 	let syncTick = 0;
 	$: {
@@ -319,28 +423,170 @@
 		? Array.from(new Set(liveGroups.map((g) => g.kind)))
 		: [physicalKindFor(fullfilmentType, isDelivery)];
 	let editingKind: DeliveryGroupKind | undefined;
+	// รับภายหลัง only — which branch's own pile is open in the settings drawer, so the
+	// drawer, pickupLaterGroupFor and onSelectPickupBranch all stay scoped to the same one
+	// pile instead of the sale-wide (possibly ambiguous) pickupLaterGroup.
+	let editingPickupStoreId: string | undefined;
+	// Shipping only — which "เพิ่มตัวเลือกรับสินค้า" pile's own address is open in the
+	// settings drawer, same role editingPickupStoreId plays for รับภายหลัง. undefined means
+	// the sale's own default (seq 1) pile.
+	let editingAddressId: string | undefined;
 	const runFromSettings = (action: () => void) => {
 		editingKind = undefined;
+		editingPickupStoreId = undefined;
+		editingAddressId = undefined;
 		action();
 	};
 	$: isSavableKind =
-		editingKind === DeliveryGroupKind.Shipping || editingKind === DeliveryGroupKind.OnSite;
+		editingKind === DeliveryGroupKind.Shipping ||
+		editingKind === DeliveryGroupKind.OnSite ||
+		editingKind === DeliveryGroupKind.PickupLater;
 
 	// Basic mode's own inline shipping/travel-fee drafts — never touches DrawerDelivery
 	// (the group-order drawer), per the rule that basic mode has nothing to do with it.
 	// Draft+save so a cashier backing out with "ยกเลิก" doesn't half-write the group.
 	let draftShippingType: ShippingType = ShippingType.Standard;
 	let draftMethod: string = 'unknown';
+	// Same Day only — which vehicle the courier dispatches. Lives beside draftMethod
+	// rather than its own editingKind branch since it is just one more field of the same
+	// Shipping settings, shown only while draftShippingType is SameDay.
+	let draftVehicleType: string = 'unknown';
 	let draftFee: string = '';
 	let draftTravelFee: string = '';
+	// OnSite only — where the service happens (see DeliveryGroup.onSiteLocation's own
+	// comment). No default: starts unset so neither tab reads as already chosen, forcing
+	// an explicit pick same as every group's own onSiteLocation starts unset.
+	let draftOnSiteLocation: 'store' | 'customer' | undefined = undefined;
+	// OnSite + draftOnSiteLocation 'store' only — which branch (see DeliveryGroup.onSiteStoreId).
+	let draftOnSiteStoreId: string = '';
+	// รับภายหลัง's own drawer drafts — date/time window, same draft+save pattern as
+	// shipping/on-site. Branch stays on the pre-existing immediate-commit modal flow
+	// (onSelectPickupBranch) rather than becoming a third draft field here: it already has
+	// to re-stamp every existing PickupLater line's own linePickupStoreId the moment it's
+	// picked (see onSelectPickupBranch's own comment), a side effect "ยกเลิก" can't sanely
+	// undo, so it is left exactly as it already behaves everywhere else it's used.
+	let draftPickupDate: string = '';
+	let draftPickupTimeSlot: string = '';
+	// <ssk-date-picker>'s own value prop is a JS Date, draftPickupDate/draftPickupTimeSlot are
+	// plain 'YYYY-MM-DD'/'HH:MM' strings — same conversion idiom BankTransferFields.svelte
+	// already uses for its own ssk-date-picker: parse/format through y/m/d(/h/m) components
+	// directly (never `new Date(iso)`/`date.toISOString()`), since both of those read/write
+	// UTC midnight and roll the date back a day in any browser west of UTC — every cashier
+	// here is in Asia/Bangkok picking a plain calendar date and wall-clock time, not a
+	// timestamp.
+	function buildPickupDateTime(dateIso: string, timeSlot: string): Date | undefined {
+		if (!dateIso) return undefined;
+		const [year, month, day] = dateIso.split('-').map(Number);
+		const [hour, minute] = timeSlot ? timeSlot.split(':').map(Number) : [0, 0];
+		const d = new Date(year, (month ?? 1) - 1, day ?? 1, hour ?? 0, minute ?? 0);
+		return isNaN(d.getTime()) ? undefined : d;
+	}
+	function formatDateToIsoLocal(date: Date): string {
+		const year = date.getFullYear();
+		const month = String(date.getMonth() + 1).padStart(2, '0');
+		const day = String(date.getDate()).padStart(2, '0');
+		return `${year}-${month}-${day}`;
+	}
+	function formatTimeSlotLocal(date: Date): string {
+		const hour = String(date.getHours()).padStart(2, '0');
+		const minute = String(date.getMinutes()).padStart(2, '0');
+		return `${hour}:${minute}`;
+	}
+	$: draftPickupDateValue = buildPickupDateTime(draftPickupDate, draftPickupTimeSlot);
+	function onDraftPickupDateChange(e: CustomEvent<{ value?: Date }>) {
+		// <ssk-date-picker>'s own `change` event carries `detail.value` — NOT `valueFrom`
+		// (that key belongs to <ssk-range-date-picker> only). Reading the wrong key silently
+		// dropped every pick here (always undefined), which is why nothing ever saved.
+		const picked = e.detail?.value;
+		draftPickupDate = picked ? formatDateToIsoLocal(picked) : '';
+		draftPickupTimeSlot = picked ? formatTimeSlotLocal(picked) : '';
+	}
+	// Online's payment method rides in the SAME Shipping settings panel as the delivery
+	// method/fee — "ข้อมูลการจัดส่ง" is one decision for an online sale, not two drawers.
+	// Only true while there's a single Shipping pile, though — see hasMultiAddressShipping
+	// and showPaymentDrawer below for the "จัดส่งหลายที่อยู่" case.
+	let draftPayment: string = 'unknown';
 
-	function openEditingKind(kind: DeliveryGroupKind) {
+	// "จัดส่งหลายที่อยู่" only — payment is still one choice for the whole sale regardless
+	// of how many Shipping piles it fans into, so it gets its own small drawer here instead
+	// of living inside any one pile's settings (see that drawer's own comment on why it
+	// hides there once this is true). Same draft+save+ยกเลิก pattern as every other
+	// drawer-backed field, just scoped to this one radio group instead of a whole pile.
+	let showPaymentDrawer = false;
+	let draftPaymentStandalone: string = 'unknown';
+	function openPaymentDrawer() {
+		draftPaymentStandalone = $orderData.paymentType?.trim() ? $orderData.paymentType : 'unknown';
+		showPaymentDrawer = true;
+	}
+	function savePaymentDrawer() {
+		setPaymentType(draftPaymentStandalone);
+		showPaymentDrawer = false;
+	}
+
+	// Resolves the specific รับภายหลัง group a pile's settings button means — an undefined
+	// target (the single-kind inline row, where there is no ambiguity to begin with) must
+	// resolve to the "no branch override" group the same way pickupLaterBranchIds and
+	// CartFulfilmentPiles' own bucket keying already treat a line with no linePickupStoreId
+	// of its own: as belonging to the sale's own default branch. A branch group built by
+	// syncBasicGroups always carries a real, resolved pickupStoreId (never literally
+	// undefined), so comparing through `?? pickupStoreId` on both sides is what makes an
+	// undefined target match that one plain group instead of matching nothing.
+	function pickupLaterGroupFor(targetPickupStoreId: string | undefined): DeliveryGroup | undefined {
+		// liveGroups is itself computed by a `$:` statement (line ~384); Svelte's dependency
+		// tracker only sees identifiers referenced directly inside a `$:` expression, not ones
+		// read through a called function like this one — so a `$:` that calls
+		// pickupLaterGroupFor isn't reliably ordered after liveGroups' own assignment, and can
+		// run while it is still undefined (seen as "Cannot read properties of undefined
+		// (reading 'find')" during the very first component init / after an HMR remount).
+		return (liveGroups ?? []).find(
+			(g) =>
+				g.kind === DeliveryGroupKind.PickupLater &&
+				(g.pickupStoreId ?? pickupStoreId) === (targetPickupStoreId ?? pickupStoreId)
+		);
+	}
+	// Only meaningful (and only ever rendered) while isSingleBucket is true — there is then
+	// exactly one รับภายหลัง group in the whole cart, so the sale's own default target
+	// unambiguously IS that one group.
+	$: singlePickupLaterGroup = pickupLaterGroupFor(undefined);
+	// Single-bucket "วันที่และเวลารับสินค้า" row commits straight to the group on change —
+	// unlike the multi-pile drawer's draft+save+ยกเลิก flow, there's only one รับภายหลัง group
+	// to begin with here, so there is nothing a cashier backing out could leave half-written.
+	$: quickPickupDateTimeValue = buildPickupDateTime(
+		singlePickupLaterGroup?.pickupDate ?? '',
+		singlePickupLaterGroup?.pickupTimeSlot ?? ''
+	);
+	function onQuickPickupDateTimeChange(e: CustomEvent<{ value?: Date }>) {
+		// Same `detail.value` (not `valueFrom`) key as onDraftPickupDateChange above.
+		const picked = e.detail?.value;
+		const group = singlePickupLaterGroup;
+		if (!group) return;
+		updateDeliveryGroup(group.id, {
+			pickupDate: picked ? formatDateToIsoLocal(picked) : undefined,
+			pickupTimeSlot: picked ? formatTimeSlotLocal(picked) : undefined
+		});
+	}
+
+	// pickupStoreId/addressId default to undefined so every existing caller (basic mode's own
+	// inline cards, all of which only ever have the sale's own default pile) is unaffected —
+	// only a "เพิ่มตัวเลือกรับสินค้า" pile's own settings button passes a specific one.
+	function openEditingKind(kind: DeliveryGroupKind, pickupStoreId?: string, addressId?: string) {
 		if (kind === DeliveryGroupKind.Shipping) {
-			draftShippingType = shippingGroup?.shippingType ?? ShippingType.Standard;
-			draftMethod = shippingGroup?.method ?? 'unknown';
-			draftFee = shippingGroup?.shippingFee !== undefined ? String(shippingGroup.shippingFee) : '';
+			editingAddressId = addressId;
+			const group = shippingGroupFor(addressId);
+			draftShippingType = group?.shippingType ?? ShippingType.Standard;
+			draftMethod = group?.method ?? 'unknown';
+			draftVehicleType = group?.vehicleType ?? 'unknown';
+			draftFee = group?.shippingFee !== undefined ? String(group.shippingFee) : '';
+			draftPayment = $orderData.paymentType?.trim() ? $orderData.paymentType : 'unknown';
 		} else if (kind === DeliveryGroupKind.OnSite) {
 			draftTravelFee = onSiteGroup?.shippingFee !== undefined ? String(onSiteGroup.shippingFee) : '';
+			draftOnSiteLocation = onSiteGroup?.onSiteLocation;
+			draftOnSiteStoreId = onSiteGroup?.onSiteStoreId ?? '';
+		} else if (kind === DeliveryGroupKind.PickupLater) {
+			editingPickupStoreId = pickupStoreId;
+			const group = pickupLaterGroupFor(pickupStoreId);
+			draftPickupDate = group?.pickupDate ?? '';
+			draftPickupTimeSlot = group?.pickupTimeSlot ?? '';
 		}
 		editingKind = kind;
 	}
@@ -348,6 +594,7 @@
 	function onSelectDraftShippingType(type: ShippingType) {
 		draftShippingType = type;
 		draftMethod = 'unknown';
+		draftVehicleType = 'unknown';
 	}
 
 	function onDraftFeeInput(e: Event) {
@@ -370,108 +617,172 @@
 		}));
 
 	function saveFulfilmentSettings() {
-		if (editingKind === DeliveryGroupKind.Shipping && shippingGroup) {
-			updateDeliveryGroup(shippingGroup.id, {
-				courier: 'Seller Owned Fleet',
-				method: draftMethod,
-				shippingType: draftShippingType,
-				shippingFee: draftFee === '' ? undefined : Number(draftFee) || 0
-			});
+		if (editingKind === DeliveryGroupKind.Shipping) {
+			const group = shippingGroupFor(editingAddressId);
+			if (group) {
+				updateDeliveryGroup(group.id, {
+					courier: 'Seller Owned Fleet',
+					method: draftMethod,
+					shippingType: draftShippingType,
+					// Frontend-only field (see DeliveryGroup.vehicleType) — only meaningful for
+					// Same Day, dropped back to undefined otherwise so a stale pick from a
+					// previous Same Day selection can't silently survive a switch to Standard.
+					vehicleType:
+						draftShippingType === ShippingType.SameDay && draftVehicleType !== 'unknown'
+							? draftVehicleType
+							: undefined,
+					shippingFee: draftFee === '' ? undefined : Number(draftFee) || 0
+				});
+			}
+			// Marketplace channels dictate their own payment method (see the reactive
+			// auto-sync below) — nothing to save here for those. Multi-address sales also skip
+			// this: their payment field lives outside the per-pile drawer entirely (see
+			// hasMultiAddressShipping), committing straight to setPaymentType on its own change
+			// handler instead of riding along with this drawer's draftPayment/ยกเลิก flow.
+			if (isOnline && !isMarketplaceChannel(subChannel) && !hasMultiAddressShipping) {
+				setPaymentType(draftPayment);
+			}
 		} else if (editingKind === DeliveryGroupKind.OnSite && onSiteGroup) {
 			updateDeliveryGroup(onSiteGroup.id, {
-				shippingFee: draftTravelFee === '' ? undefined : Number(draftTravelFee) || 0
+				shippingFee: draftTravelFee === '' ? undefined : Number(draftTravelFee) || 0,
+				onSiteLocation: draftOnSiteLocation,
+				onSiteStoreId: draftOnSiteLocation === 'store' ? draftOnSiteStoreId || undefined : undefined
 			});
+		} else if (editingKind === DeliveryGroupKind.PickupLater) {
+			const group = pickupLaterGroupFor(editingPickupStoreId);
+			if (group) {
+				updateDeliveryGroup(group.id, {
+					pickupDate: draftPickupDate || undefined,
+					pickupTimeSlot: draftPickupTimeSlot || undefined
+				});
+			}
 		}
 		editingKind = undefined;
+		editingPickupStoreId = undefined;
+		editingAddressId = undefined;
 	}
-	$: showFulfilmentCards = !(presentKinds.length === 1 && presentKinds[0] === DeliveryGroupKind.PickupInStore);
 	$: itemsOfKind = (kind: DeliveryGroupKind): TCartItem[] => {
-		const ids = new Set(liveGroups.find((g) => g.kind === kind)?.itemIds ?? []);
+		const ids = new Set(liveGroups.filter((g) => g.kind === kind).flatMap((g) => g.itemIds));
 		return liveGroups.length > 0 ? (cartList ?? []).filter((i) => !!i.lineId && ids.has(i.lineId)) : cartList ?? [];
 	};
-	$: kindStatus = (kind: DeliveryGroupKind): { text: string; warn: boolean } => {
-		switch (kind) {
-			case DeliveryGroupKind.PickupLater:
-				return pickupBranch
-					? { text: `สาขา ${pickupBranch.name}`, warn: false }
-					: { text: 'ยังไม่เลือกสาขา', warn: true };
-			case DeliveryGroupKind.Shipping:
-				if (!selectedAddress) return { text: 'ยังไม่มีที่อยู่', warn: true };
-				if (isBasicMarketplaceShip) return { text: 'ขนส่งตามแพลตฟอร์ม', warn: false };
-				if (!shippingGroup?.method || shippingGroup.shippingFee === undefined)
-					return { text: 'ยังไม่เลือกขนส่ง/ค่าส่ง', warn: true };
-				return {
-					text: `${methodLabel(shippingGroup.method)} · ${formatPriceWithBath(shippingGroup.shippingFee)}`,
-					warn: false
-				};
-			case DeliveryGroupKind.OnSite:
-				if (!selectedAddress) return { text: 'ยังไม่มีที่อยู่', warn: true };
-				return onSiteGroup?.shippingFee === undefined
-					? { text: 'ยังไม่ระบุค่าเดินทาง', warn: true }
-					: { text: `ค่าเดินทาง ${formatPriceWithBath(onSiteGroup.shippingFee)}`, warn: false };
-			case DeliveryGroupKind.Digital:
-				return buyer?.email || buyer?.phone
-					? { text: buyer?.email || maskPhoneMiddle(buyer?.phone), warn: false }
-					: { text: 'ยังไม่มีอีเมล/เบอร์โทร', warn: true };
-			default:
-				return { text: 'ส่งมอบที่เคาน์เตอร์', warn: false };
-		}
-	};
-	$: isMultiFulfilment = !$groupOrderMode && presentKinds.length > 1;
+	$: isMultiFulfilment = displayKinds.length > 1;
 	$: hasShip = presentKinds.includes(DeliveryGroupKind.Shipping);
 	$: hasOnSite = presentKinds.includes(DeliveryGroupKind.OnSite);
 	$: hasPickupLater = presentKinds.includes(DeliveryGroupKind.PickupLater);
+	$: hasPickupInStore = presentKinds.includes(DeliveryGroupKind.PickupInStore);
 	$: hasDigital = presentKinds.includes(DeliveryGroupKind.Digital);
-	$: shippingGroup = liveGroups.find((g) => g.kind === DeliveryGroupKind.Shipping);
+	// Online is Shipping-only (resolveLineKind never resolves an online line to anything
+	// else), but switching channel deliberately preserves $openFulfilmentPiles/
+	// $activeFulfilmentPile across tabs (see onSelectChannel's own comment) — so a POS
+	// รับภายหลัง/ให้บริการนอกสถานที่ pile left open before switching to ออนไลน์ must never
+	// resurface here just because CartFulfilmentPiles is handed the same raw stores.
+	$: onlineOpenPiles = $openFulfilmentPiles.filter((p) => p.kind === DeliveryGroupKind.Shipping);
+	$: onlineActivePile =
+		$activeFulfilmentPile?.kind === DeliveryGroupKind.Shipping ? $activeFulfilmentPile : undefined;
+	// True the moment 2+ Shipping piles exist, regardless of channel — POS's own
+	// "เพิ่มตัวเลือกรับสินค้า" → "จัดส่งจากหน้าร้าน" reaches this exactly the same way online's
+	// "จัดส่งหลายที่อยู่" button does (same shippingBucketCount, same openAddShippingPile).
+	// A single buyer.address field can't speak for N per-pile addresses any more once this
+	// is true, so the inline address row under ลูกค้า hides for BOTH channels then (see
+	// needsAddress's own use of this below) — only the online-only payment-drawer
+	// relocation further below stays gated on `isOnline &&` as well, since POS never shows
+	// a payment picker here regardless.
+	$: hasMultiAddressShipping = shippingBucketCount > 1;
+	// Whoever needs a delivery destination — POS ShopDelivery/OnSite, any online sale
+	// (always ships), or a Link Bill (sent to a customer who isn't in the shop) — picks
+	// it in the same ลูกค้าและที่อยู่จัดส่ง drawer, named once here so the trigger prop and
+	// the inline address row below never drift apart.
+	$: needsAddress = hasShip || hasOnSite || isLinkBill;
+	// The sale's own DEFAULT Shipping group (addressGroupSeq 1) — used by the single-kind
+	// inline card, which only ever shows when exactly one Shipping bucket exists (so it IS
+	// this one). A second (third, ...) "เพิ่มตัวเลือกรับสินค้า" pile's own group is resolved
+	// per-pile via shippingGroupFor instead (see onEditPile/openEditingKind).
+	$: shippingGroup = liveGroups.find(
+		(g) => g.kind === DeliveryGroupKind.Shipping && g.addressGroupSeq === 1
+	);
 	$: onSiteGroup = liveGroups.find((g) => g.kind === DeliveryGroupKind.OnSite);
 	$: digitalGroup = liveGroups.find((g) => g.kind === DeliveryGroupKind.Digital);
+	// Resolves the specific Shipping pile's own group — mirrors pickupLaterGroupFor exactly.
+	// undefined targetAddressId means the sale's own default (seq 1) pile; a real address id
+	// means a "เพิ่มตัวเลือกรับสินค้า" pile's own group, matched by its own recipientAddressId
+	// (see syncBasicGroups' shippingBuckets).
+	function shippingGroupFor(targetAddressId: string | undefined): DeliveryGroup | undefined {
+		// Same liveGroups-ordering hazard as pickupLaterGroupFor above — guard it the same way.
+		return (liveGroups ?? []).find(
+			(g) =>
+				g.kind === DeliveryGroupKind.Shipping &&
+				(targetAddressId ? g.recipientAddressId === targetAddressId : g.addressGroupSeq === 1)
+		);
+	}
+	// The settings drawer always edits ONE concrete branch's own รับภายหลัง group — see
+	// pickupLaterGroupFor.
+	$: editingPickupLaterGroup = pickupLaterGroupFor(editingPickupStoreId);
+	$: editingPickupBranch = branches.find(
+		(b) => b.id === (editingPickupLaterGroup?.pickupStoreId ?? pickupStoreId)
+	);
 	$: isBasicMarketplaceShip = !!shippingGroup?.method && shippingGroup.method === 'platform';
+	// Shopee/Lazada/LINE SHOPPING/TikTok Shop own both delivery AND payment for an order
+	// placed through them — the cashier never picks either, same as the shipping method
+	// already auto-resolving to 'platform' for these channels (see syncBasicGroups).
+	// paymentMethods carries one entry per marketplace whose value matches the channel.
+	$: if (isOnline && isMarketplaceChannel(subChannel) && $orderData.paymentType !== subChannel) {
+		setPaymentType(subChannel);
+	} else if (
+		isOnline &&
+		!isMarketplaceChannel(subChannel) &&
+		isMarketplaceChannel($orderData.paymentType)
+	) {
+		// Switched away from a marketplace sub-channel — a payment type left over from it
+		// (e.g. 'shopee') no longer describes anything on THIS channel, so it must not
+		// stick around looking like a real, cashier-picked choice.
+		setPaymentType('unknown');
+	}
 
 	// CartFooter's pay gate. presentKinds already falls back to [physicalKindFor(...)]
 	// when $deliveryGroups is empty (multi-parcel flag off, or a walk-in zero-cost
 	// sale), so hasShip/hasOnSite/hasPickupLater below already equal today's plain
 	// fullfilmentType-based rule in that case — no separate fallback branch needed.
+	// Named for the buyer check it started as, but doubles as this sale's whole
+	// "fulfilment info complete enough to pay" gate now — the single-bucket counterpart
+	// of isGroupFulfilmentComplete below, since isSingleBucket means showDeliveryDetail is
+	// false and CartFooter's own $deliverySummary.missing check never runs at all. A
+	// Shipping/OnSite fee left blank is NOT required — it's just ฿0 — so it's never checked
+	// here, same as isGroupFulfilmentComplete itself.
+	// OnSite has no default location any more (see DeliveryGroup.onSiteLocation's own
+	// comment) — ready only once the cashier has explicitly picked 'store' (with a branch)
+	// or 'customer' (with a real address); undefined is simply not ready yet.
+	$: onSiteReady =
+		onSiteGroup?.onSiteLocation === 'store'
+			? !!onSiteGroup?.onSiteStoreId
+			: onSiteGroup?.onSiteLocation === 'customer'
+				? !!buyer?.address
+				: false;
 	$: footerIsBuyerValid =
 		hasShip || hasOnSite
-			? !!buyer?.name && !!buyer?.address
+			? !!buyer?.name &&
+				(!hasShip || (!!buyer?.address && !!shippingGroup?.method && shippingGroup.method !== 'unknown')) &&
+				(!hasOnSite || onSiteReady)
 			: customerRequired
 				? !!buyer?.name
 				: true;
 	$: footerIsDeliveryLater = hasShip || hasOnSite || hasPickupLater;
+	// Single-bucket required-field flags — drive the red asterisk + error-styled trigger on
+	// ข้อมูลการจัดส่ง/ข้อมูลการจัดส่ง(OnSite) below, the visual half of the same gate
+	// footerIsBuyerValid enforces.
+	$: shipInfoMissing =
+		hasShip && (!shippingGroup?.method || shippingGroup.method === 'unknown');
+	$: onSiteInfoMissing = hasOnSite && !onSiteReady;
 	$: footerPickupStoreId = hasPickupLater ? pickupStoreId : '';
 
-	// "at least one fee is known" is not the same question deliverySummary answers
-	// (feeUnknown is true the moment ANY group is still unknown) — the row needs to
-	// know whether to show a total at all, so it reads the groups directly. A pickup or
-	// digital group's fee is 0 by definition, which IS "known" — counting it here would
-	// print "· ฿0" on a walk-in sale that has no shipping fee to speak of at all, so
-	// only a group that could actually need a courier counts.
-	$: hasKnownDeliveryFee = liveGroups.some(
-		(g) => kindNeedsShippingMethod(g.kind) && g.shippingFee !== undefined
-	);
 	// A thing handed across the counter has no address, no fee and no tracking — calling
 	// it a พัสดุ would be a lie, so the handover pile is reported as pieces instead.
 	$: handoverQty = $deliverySummary.handoverGroup
 		? handoverItemQty($deliverySummary.handoverGroup, cartList ?? [])
 		: 0;
-	$: deliverySummaryText = [
-		handoverQty > 0 ? `รับเลย ${handoverQty} ชิ้น` : '',
-		$deliverySummary.parcelCount > 0 ? `${$deliverySummary.parcelCount} พัสดุ` : '',
-		hasKnownDeliveryFee ? formatPriceWithBath($deliverySummary.totalFee) : ''
-	]
-		.filter(Boolean)
-		.join(' · ');
 	// The phrase from the approved prototype's fulfilment selector, shown as a derived
 	// state rather than as a fourth fulfilment option a cashier would have to choose
 	// before knowing which lines even ended up in stock.
 	$: isMixedReceive = allowPartialReceive && handoverQty > 0 && $deliverySummary.parcelCount > 0;
-	// The reason line names the actual blocker: a digital parcel is missing an email,
-	// never an address.
-	$: firstMissingGroup = $deliverySummary.missing[0];
-	$: firstMissingReason =
-		firstMissingGroup?.kind === DeliveryGroupKind.Digital
-			? 'ยังไม่มีอีเมลหรือเบอร์โทร'
-			: 'ยังไม่ระบุที่อยู่';
 
 	// The sale channel is a field of the order (saleChannel.type), not navigation
 	// between views, so it is presented as a two-option segmented choice.
@@ -531,9 +842,7 @@
 		// whole — any per-line pick the cashier made earlier (B3's "move the machine to
 		// จัดส่ง") must follow the new default too, same as switching ShopDelivery back to
 		// PickupImmediate already resets the old receiveMode-based override.
-		if (!$groupOrderMode) {
-			ResetPhysicalLineFulfilment();
-		}
+		ResetPhysicalLineFulfilment();
 	};
 
 	// Switching channel changes which customer flow applies, so the draft order is
@@ -626,10 +935,6 @@
 		showDrawerCustomer = true;
 	}
 
-	function toggleDrawerOnlineChannel() {
-		showDrawerOnlineChannel = !showDrawerOnlineChannel;
-	}
-
 	const onClickSelectCustomer = async (c: Customer) => {
 		if (!c.firstName || !c.lastName) return;
 
@@ -663,45 +968,207 @@
 		}
 	}
 
-	function toggleDeliveryDrawer() {
-		showDeliveryDrawer = !showDeliveryDrawer;
+	// "เพิ่มตัวเลือกรับสินค้า" — the 4 piles a cashier can open beside whatever's already in
+	// the cart. Opening one just adds an empty section to the list (openFulfilmentPiles in
+	// $stores/cart/cart) — items land in it by dragging them there (see
+	// CartFulfilmentPiles.svelte), not by tapping the catalog into an "active" pile.
+	// รับทันที can only ever exist once (the counter needs no second copy of itself);
+	// ให้บริการนอกสถานที่ is always offered here — the actual "service items only" rule is
+	// enforced where a line's legal kinds are decided at all (lineFulfilmentOptions), the
+	// same place the old per-line dropdown read it from.
+	$: hasOpenPile = (kind: DeliveryGroupKind) => $openFulfilmentPiles.some((p) => p.kind === kind);
+	$: pileTypeOptions = [
+		{
+			kind: DeliveryGroupKind.PickupInStore,
+			label: 'รับทันที',
+			hint: 'รับสินค้าไปเลย',
+			icon: 'outline-shopping-bag',
+			disabled: presentKinds.includes(DeliveryGroupKind.PickupInStore) || hasOpenPile(DeliveryGroupKind.PickupInStore)
+		},
+		{
+			kind: DeliveryGroupKind.PickupLater,
+			label: 'รับภายหลัง',
+			hint: 'ลูกค้ามารับภายหลัง',
+			icon: 'outline-clock',
+			disabled: pickupLaterBranchOptions.length === 0
+		},
+		{
+			kind: DeliveryGroupKind.Shipping,
+			label: 'จัดส่งจากหน้าร้าน',
+			hint: hasShip
+				? shippingAddressOptions.length === 0
+					? 'ลูกค้าไม่มีที่อยู่อื่นให้เลือก'
+					: 'จัดส่งไปอีกที่อยู่หนึ่ง'
+				: 'ร้านจัดส่งให้ลูกค้า',
+			icon: 'outline-truck',
+			// Once a Shipping pile already exists, a second one is about PICKING a different
+			// address, not about there being room for another plain pile — same reasoning
+			// pickupLaterBranchOptions.length === 0 already uses for PickupLater below.
+			disabled: hasShip ? shippingAddressOptions.length === 0 : hasOpenPile(DeliveryGroupKind.Shipping)
+		},
+		{
+			kind: DeliveryGroupKind.OnSite,
+			label: 'ให้บริการนอกสถานที่',
+			hint: 'เฉพาะสินค้าประเภทบริการ',
+			icon: 'outline-wrench-screwdriver',
+			disabled: presentKinds.includes(DeliveryGroupKind.OnSite) || hasOpenPile(DeliveryGroupKind.OnSite)
+		},
+		{
+			kind: DeliveryGroupKind.Digital,
+			label: 'จัดส่งเข้าระบบ (ดิจิทัล)',
+			hint: 'เฉพาะสินค้าประเภทดิจิทัล',
+			icon: 'outline-bolt',
+			// Same single-instance rule as รับทันที above — Digital can never have more than
+			// one bucket (see needsDigitalContact's own comment), so a second pile would have
+			// nothing of its own to collect that the first one doesn't already.
+			disabled: presentKinds.includes(DeliveryGroupKind.Digital) || hasOpenPile(DeliveryGroupKind.Digital)
+		}
+	];
+	$: pileMenuOptions = pileTypeOptions.map((option) => ({ ...option, value: option.kind }));
+
+	// Every branch a รับภายหลัง pile already open is using — a new one must pick a
+	// DIFFERENT branch, never one already collecting for this sale. Checked against both
+	// items actually in a รับภายหลัง pile AND piles opened but still empty (openFulfilmentPiles)
+	// — otherwise two empty piles for the same branch could be opened back to back.
+	$: usedPickupLaterBranchIds = new Set([
+		...itemsOfKind(DeliveryGroupKind.PickupLater).map((i) => i.linePickupStoreId ?? pickupStoreId),
+		...$openFulfilmentPiles
+			.filter((p) => p.kind === DeliveryGroupKind.PickupLater)
+			.map((p) => p.pickupStoreId ?? pickupStoreId)
+	]);
+	$: pickupLaterBranchOptions = branches.filter((b) => !!b.id && !usedPickupLaterBranchIds.has(b.id));
+	let showAddPileBranchModal = false;
+
+	// Every address a Shipping pile already open is using — a new one must pick a DIFFERENT
+	// address, never one already shipping for this sale. Same shape as
+	// usedPickupLaterBranchIds above: checked against both items actually in a Shipping pile
+	// AND piles opened but still empty. idAddress (the sale's own default address, every
+	// line with no override of its own falls back to it) also counts as "in use" — without
+	// it here, the base pile's own address was still offered again as if it were free,
+	// since no line in that pile ever carries lineAddressId as an explicit override.
+	$: usedShippingAddressIds = new Set(
+		[
+			idAddress,
+			...itemsOfKind(DeliveryGroupKind.Shipping).map((i) => i.lineAddressId),
+			...$openFulfilmentPiles
+				.filter((p) => p.kind === DeliveryGroupKind.Shipping)
+				.map((p) => p.addressId)
+		].filter((id): id is string => !!id)
+	);
+	// undefined while picking a brand NEW pile's address (every used address is excluded);
+	// set to the pile's CURRENT address while re-picking an existing one from its own
+	// settings drawer (that address stays selectable for itself).
+	let pileAddressPickerTarget: string | undefined;
+	$: shippingAddressOptions = addresses.filter(
+		(a) =>
+			!!a.id &&
+			(!usedShippingAddressIds.has(String(a.id)) || String(a.id) === pileAddressPickerTarget)
+	);
+	let showPileAddressModal = false;
+
+	function openAddShippingPile() {
+		pileAddressPickerTarget = undefined;
+		if (shippingAddressOptions.length === 0) {
+			toastStore.addToast({
+				message: 'ลูกค้าไม่มีที่อยู่อื่นให้เลือก — เพิ่มที่อยู่ใหม่ในโปรไฟล์ลูกค้าก่อน',
+				type: 'error',
+				timeout: 5000,
+				testId: 'sales.pile.address.none'
+			});
+			return;
+		}
+		showPileAddressModal = true;
 	}
 
-	function openStandardDeliveryMethod() {
-		openMethodGroupId = $groupOrderMode ? singleDeliveryGroup?.id : shippingGroup?.id;
-		showDeliveryDrawer = true;
+	function onSelectPileAddress(address: Address) {
+		const addressId = String(address.id);
+		const isNewPile = pileAddressPickerTarget === undefined;
+		// Defensive — the picker's own list is already filtered to exclude every address in
+		// use (see shippingAddressOptions), so this only ever fires if something outside this
+		// flow changed the cart mid-pick.
+		if (isNewPile && usedShippingAddressIds.has(addressId)) {
+			toastStore.addToast({
+				message: 'ที่อยู่นี้ถูกใช้โดยพัสดุอื่นอยู่แล้ว — เลือกที่อยู่อื่น',
+				type: 'error',
+				timeout: 5000,
+				testId: 'sales.pile.address.duplicate'
+			});
+			return;
+		}
+		if (isNewPile) {
+			addOpenFulfilmentPile({ kind: DeliveryGroupKind.Shipping, addressId });
+			setActiveFulfilmentPile({ kind: DeliveryGroupKind.Shipping, addressId });
+		} else {
+			// Re-stamp every line currently in this pile onto the newly picked address — same
+			// pattern onSelectPickupBranch uses for a รับภายหลัง pile's own branch.
+			const previousAddressId = pileAddressPickerTarget;
+			itemsOfKind(DeliveryGroupKind.Shipping).forEach((item) => {
+				if (item.lineId && (item.lineAddressId ?? '') === (previousAddressId ?? '')) {
+					SetCartItemAddressId(item.lineId, addressId);
+				}
+			});
+			editingAddressId = addressId;
+		}
+		showPileAddressModal = false;
+	}
+	// A plain ghost button + floating menu (not ssk-dropdown), closed on an outside click,
+	// same pattern CartItem.svelte's own per-line fulfilment menu uses.
+	let showPileMenu = false;
+	let pileMenuWrapEl: HTMLElement | undefined;
+
+	function onWindowClickForPileMenu(e: MouseEvent) {
+		if (!showPileMenu) return;
+		if (pileMenuWrapEl && !pileMenuWrapEl.contains(e.target as Node)) showPileMenu = false;
 	}
 
-	// Manual entry point for a voluntary split: a soft-split parcel pushes
-	// deliveryGroups from 1 to 2 entries, which is what flips showDeliveryDetail
-	// (and the S2 row it gates) to true on its own — nothing else here needs to react.
-	// enableGroupOrder (not addUserDeliveryGroup) because a pickup/pickup-later sale's
-	// own syncDeliveryGroups guard clears groups with no digital item in the cart — this
-	// is the one call that tells it not to, for exactly this cashier-started split.
-	function createGroupOrder() {
-		// Matches how the rest of THIS sale is already being collected (pickup now/later/
-		// ship) — a new parcel must never default to Shipping on a pickup sale. Passing
-		// cartList/deliveryCtx is what makes whatever is ALREADY in the cart show up as its
-		// own "กลุ่ม 1" immediately, instead of staying invisible until some unrelated cart
-		// edit happens to re-trigger the reactive sync above on its own.
-		const id = enableGroupOrder(
-			cartList ?? [],
-			deliveryCtx,
-			physicalKindFor(fullfilmentType, isDelivery)
-		);
-		setActiveDeliveryGroup(id);
-		showDeliveryDrawer = true;
+	// Opening a pile also makes it the active one — the cashier just asked for it, so the
+	// next product they tap should land there without an extra drag (see
+	// activeFulfilmentPile in $stores/cart/cart). The section itself shows which pile is
+	// active; clicking any pile's header (including this new one, or back to the default)
+	// switches it — see CartFulfilmentPiles' own onSetActivePile.
+	function onSelectPileType(kind: DeliveryGroupKind) {
+		if (kind === DeliveryGroupKind.PickupInStore) {
+			if (presentKinds.includes(DeliveryGroupKind.PickupInStore)) return;
+			addOpenFulfilmentPile({ kind });
+			setActiveFulfilmentPile({ kind });
+		} else if (kind === DeliveryGroupKind.Shipping) {
+			// A second "จัดส่งจากหน้าร้าน" pile isn't a plain fulfilment pile at all — it's a
+			// second ADDRESS, picked from the customer's own address book (see
+			// openAddShippingPile), the same way a second รับภายหลัง pile picks its own branch.
+			if (hasShip) {
+				openAddShippingPile();
+			} else {
+				addOpenFulfilmentPile({ kind });
+				setActiveFulfilmentPile({ kind });
+			}
+		} else if (kind === DeliveryGroupKind.PickupLater) {
+			if (pickupLaterBranchOptions.length > 0) showAddPileBranchModal = true;
+		} else {
+			addOpenFulfilmentPile({ kind });
+			setActiveFulfilmentPile({ kind });
+		}
 	}
 
-	// Adding a group once already split doesn't need to open the drawer — the cashier
-	// taps the new (empty, now-active) card and starts shopping straight into it.
-	function addAnotherGroup() {
-		const id = enableGroupOrder(
-			cartList ?? [],
-			deliveryCtx,
-			physicalKindFor(fullfilmentType, isDelivery)
-		);
-		setActiveDeliveryGroup(id);
+	function onSelectAddPileBranch(branch: Store) {
+		addOpenFulfilmentPile({ kind: DeliveryGroupKind.PickupLater, pickupStoreId: branch.id });
+		setActiveFulfilmentPile({ kind: DeliveryGroupKind.PickupLater, pickupStoreId: branch.id });
+		showAddPileBranchModal = false;
+	}
+
+	// Clicking a pile's own header switches the tap target to (or away from) it — the
+	// cashier doesn't have to re-open "เพิ่มตัวเลือกรับสินค้า" just to go back to a pile
+	// that already exists, or to return to the ordinary default line.
+	function onSetActivePile(
+		pile: { kind: string; pickupStoreId?: string; addressId?: string } | undefined
+	) {
+		const active = $activeFulfilmentPile;
+		const isSamePile =
+			!!pile &&
+			!!active &&
+			active.kind === pile.kind &&
+			active.pickupStoreId === pile.pickupStoreId &&
+			(active.addressId ?? '') === (pile.addressId ?? '');
+		setActiveFulfilmentPile(isSamePile ? undefined : pile);
 	}
 
 	const onClickRemoveCustomer = () => {
@@ -724,9 +1191,14 @@
 		buyer.address = addressString;
 	};
 
-	const onClickSelectCustomerOnline = (p: PartyInfo) => {
-		buyer = p;
-	};
+	// ให้บริการนอกสถานที่'s own inline address card picker (see draftOnSiteLocation ===
+	// 'customer' above) picks from the SAME single sale-wide address as Shipping — OnSite
+	// has no per-group address override of its own — so this just does what
+	// DrawerCustomerAddress's own pickAddress does: move idAddress and refresh buyer.address.
+	function onSelectOnSiteAddress(address: Address) {
+		idAddress = String(address.id);
+		onClickSelectAddress(address);
+	}
 
 	const resetBuyer = () => {
 		buyer = newPartyInfo();
@@ -745,16 +1217,55 @@
 	});
 </script>
 
-<Modal
-	id="fulfilment-settings"
-	ShowModal={!!editingKind}
-	title={editingKind ? `ตั้งค่า${basicCategoryLabel(editingKind)}` : ''}
-	hPosition="left"
-	width="min(30rem, calc(100vw - 2.5rem))"
-	toggleModal={() => (editingKind = undefined)}
+<svelte:window on:click={onWindowClickForPileMenu} />
+
+<ssk-drawer
+	width="min(30rem, 100vw)"
+	side="right"
+	show={!!editingKind}
+	bodypadding="20px"
+	on:close={() => {
+		editingKind = undefined;
+		editingPickupStoreId = undefined;
+		editingAddressId = undefined;
+	}}
 >
+	<ssk-drawer-header
+		slot="header"
+		title={editingKind === DeliveryGroupKind.Shipping && isOnline
+			? 'ตั้งค่าการชำระและจัดส่ง'
+			: editingKind
+				? `ตั้งค่า${basicCategoryLabel(editingKind)}`
+				: ''}
+		close={() => {
+			editingKind = undefined;
+			editingPickupStoreId = undefined;
+			editingAddressId = undefined;
+		}}
+	/>
 	<div class="settings-body" slot="body">
-				{#if editingKind === DeliveryGroupKind.Shipping || editingKind === DeliveryGroupKind.OnSite}
+				{#if editingKind === DeliveryGroupKind.Shipping && editingAddressId}
+					<!-- A "เพิ่มตัวเลือกรับสินค้า" Shipping pile ships to its OWN address, picked from
+					     the customer's address book — not the sale's shared customer drawer, which
+					     only ever holds the ONE default address every other pile falls back to. -->
+					{@const pileAddress = addresses.find((a) => String(a.id) === editingAddressId)}
+					<button
+						type="button"
+						class="pile-row"
+						on:click={() => {
+							pileAddressPickerTarget = editingAddressId;
+							showPileAddressModal = true;
+						}}
+						data-testid="sales.pile.shipping.address"
+					>
+						<ssk-icon name="outline-map-pin" size="xs" themeColor="primary"></ssk-icon>
+						<span class="pile-row-label">ส่งไปที่</span>
+						<span class="pile-row-value">
+							{pileAddress ? addressToDisplay(pileAddress) : 'เลือกที่อยู่จัดส่ง'}
+						</span>
+						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
+					</button>
+				{:else if editingKind === DeliveryGroupKind.Shipping}
 					<button
 						type="button"
 						class="pile-row"
@@ -763,90 +1274,324 @@
 						data-testid={`sales.pile.${editingKind}.address`}
 					>
 						<ssk-icon name="outline-map-pin" size="xs" themeColor={selectedAddress ? 'primary' : 'error'}></ssk-icon>
-						<span class="pile-row-label">{editingKind === DeliveryGroupKind.Shipping ? 'ส่งไปที่' : 'ให้บริการที่'}</span>
+						<span class="pile-row-label">ส่งไปที่</span>
 						<span class="pile-row-value">
 							{selectedAddress ? addressToDisplay(selectedAddress) : 'ยังไม่มีที่อยู่ลูกค้า — เพิ่มที่อยู่'}
 						</span>
 						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
 					</button>
+				{:else if editingKind === DeliveryGroupKind.OnSite}
+					<!-- A service item isn't always done at the customer's own address — staff
+					     can just as well have the customer come to the store instead, same choice
+					     a product sale already gets (รับทันที vs จัดส่งให้ลูกค้า). -->
+					<div class="inline-settings">
+						<span class="field-label">รับบริการที่</span>
+						<ssk-tab-header
+							class="tabs"
+							variant="button"
+							size="sm"
+							align="center"
+							color="primary"
+							buttonwidth="auto"
+						>
+							<ssk-tab-button
+								variant="button"
+								size="sm"
+								align="center"
+								buttonwidth="auto"
+								width="100%"
+								active={draftOnSiteLocation === 'customer'}
+								on:click={() => (draftOnSiteLocation = 'customer')}
+							>
+								<div class="tab-text">ที่อยู่ลูกค้า</div>
+							</ssk-tab-button>
+							<ssk-tab-button
+								variant="button"
+								size="sm"
+								align="center"
+								buttonwidth="auto"
+								width="100%"
+								active={draftOnSiteLocation === 'store'}
+								on:click={() => (draftOnSiteLocation = 'store')}
+							>
+								<div class="tab-text">ที่ร้าน</div>
+							</ssk-tab-button>
+						</ssk-tab-header>
+					</div>
+					{#if draftOnSiteLocation === 'customer'}
+						<!-- Same card picker DrawerCustomerAddress's own ที่อยู่จัดส่ง section uses —
+						     expanded inline here too, same "no second drawer" fix as ที่ร้าน's branch
+						     list below. No customer yet still needs the full customer drawer (there's
+						     no address book to show without one), same as today. -->
+						{#if !buyer?.name}
+							<button
+								type="button"
+								class="pile-row warn"
+								on:click={() => runFromSettings(() => openCustomerDrawer('customer'))}
+								data-testid="sales.pile.onSite.address"
+							>
+								<ssk-icon name="outline-map-pin" size="xs" themeColor="error"></ssk-icon>
+								<span class="pile-row-value">ยังไม่มีลูกค้า — เลือกลูกค้าก่อน</span>
+								<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
+							</button>
+						{:else}
+							<div class="inline-settings">
+								<span class="field-label-row">
+									<span class="field-label">ที่อยู่ลูกค้า<span class="required">*</span></span>
+									{#if addresses.length > 0}
+										<button
+											type="button"
+											class="link"
+											on:click={() => runFromSettings(() => openCustomerDrawer('address'))}
+											data-testid="sales.pile.onSite.address.add"
+										>
+											เพิ่มที่อยู่ใหม่
+										</button>
+									{/if}
+								</span>
+								{#if addresses.length === 0}
+									<button
+										type="button"
+										class="pile-row warn"
+										on:click={() => runFromSettings(() => openCustomerDrawer('address'))}
+										data-testid="sales.pile.onSite.address.create"
+									>
+										<ssk-icon name="outline-map-pin" size="xs" themeColor="error"></ssk-icon>
+										<span class="pile-row-value">เพิ่มที่อยู่จัดส่งของลูกค้ารายนี้</span>
+										<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
+									</button>
+								{:else}
+									<PickList
+										label="ที่อยู่ลูกค้า"
+										count={addresses.length}
+										selectedIndex={addresses.findIndex((a) => String(a.id) === idAddress)}
+										onMove={(i) => {
+											const next = addresses[i];
+											if (next) onSelectOnSiteAddress(next);
+										}}
+									>
+										{#each addresses as address, index (address.id ?? index)}
+											<PickCard
+												title={address.contactName || 'ที่อยู่จัดส่ง'}
+												badge={address.isDefault ? 'ที่อยู่หลัก' : ''}
+												lines={[
+													addressToDisplay(address),
+													address.phone ? `โทร ${address.phone}` : ''
+												].filter(Boolean)}
+												selected={String(address.id) === idAddress}
+												tabbable={String(address.id) === idAddress ||
+													(!selectedAddress && index === 0)}
+												onSelect={() => onSelectOnSiteAddress(address)}
+												testId={`sales.pile.onSite.address.${address.id ?? index}`}
+											/>
+										{/each}
+									</PickList>
+								{/if}
+							</div>
+						{/if}
+					{:else if draftOnSiteLocation === 'store'}
+						<!-- Any of the company's own branches is a legal choice here — unlike
+						     รับภายหลัง's branch (which only ever means the ONE actually collecting),
+						     every branch can equally offer the service, so the list is never
+						     pre-filtered (see its own "ที่ร้านจะเป็นสาขาทั้งหมดของร้าน" comment).
+						     Expanded inline, not a button into a second modal — this already IS
+						     the "ตั้งค่า" drawer, so a tab pick should show the cards right there. -->
+						<PickList
+							label="สาขาที่ให้บริการ"
+							count={branches.length}
+							selectedIndex={branches.findIndex((b) => b.id === draftOnSiteStoreId)}
+							onMove={(i) => (draftOnSiteStoreId = branches[i]?.id ?? draftOnSiteStoreId)}
+						>
+							{#each branches as branch, index (branch.id ?? index)}
+								<PickCard
+									title={branch.name}
+									badge={branch.id === $currentStore?.id ? 'สาขาที่ขาย' : ''}
+									lines={[addressToDisplay(branch.address), branch.phone ? `โทร ${branch.phone}` : '']
+										.filter(Boolean)
+										.map(String)}
+									selected={branch.id === draftOnSiteStoreId}
+									tabbable={branch.id === draftOnSiteStoreId ||
+										(!draftOnSiteStoreId && index === 0)}
+									onSelect={() => (draftOnSiteStoreId = branch.id ?? draftOnSiteStoreId)}
+									testId={`sales.pile.onSite.branch.${branch.id ?? index}`}
+								/>
+							{/each}
+						</PickList>
+						{#if branches.length === 0}
+							<p class="pick-empty">บริษัทนี้มีสาขาเดียว จึงไม่มีสาขาอื่นให้เลือก</p>
+						{/if}
+					{/if}
 				{/if}
 				{#if editingKind === DeliveryGroupKind.Shipping}
 					{#if isBasicMarketplaceShip}
+						{#if isOnline}
+							<div class="pile-row static" data-testid="sales.pile.payment.platform">
+								<ssk-icon name="outline-credit-card" size="xs" themeColor="primary"></ssk-icon>
+								<span class="pile-row-label">ชำระเงิน</span>
+								<span class="pile-row-value">ตามแพลตฟอร์ม ({subChannelOption?.label ?? subChannel})</span>
+							</div>
+						{/if}
 						<div class="pile-row static" data-testid="sales.pile.shipping.courier.platform">
 							<ssk-icon name="outline-truck" size="xs" themeColor="primary"></ssk-icon>
 							<span class="pile-row-label">ขนส่ง</span>
 							<span class="pile-row-value">ตามแพลตฟอร์ม ({subChannelOption?.label ?? subChannel})</span>
 						</div>
+						<!-- Courier is the platform's call, never the merchant's — but the fee is
+						     still the merchant's own, same field as every other shipping fee. -->
+						<div class="inline-settings">
+							<div class="fee-field">
+								<ssk-input
+									size="lg"
+									label="ค่าจัดส่ง"
+									placeholder="ระบุค่าจัดส่ง"
+									autoComplete="off"
+									value={draftFee}
+									on:input={onDraftFeeInput}
+									on:change={onDraftFeeInput}
+									data-testid="sales.pile.shipping.fee"
+								/>
+								<ssk-button
+									size="lg"
+									variant="outline"
+									themeColor="primary"
+									on:click={() => (draftFee = '0')}
+									data-testid="sales.pile.shipping.fee.free"
+								>
+									ฟรี
+								</ssk-button>
+							</div>
+						</div>
 					{:else}
+						{#if isOnline && !hasMultiAddressShipping}
+							<!-- Payment rides in this same drawer, not a separate one — "ข้อมูลการ
+							     จัดส่ง" is one decision for an online sale. Asked first: how the
+							     buyer pays is decided before how it ships. Only true while there's
+							     just the one Shipping pile, though — once "จัดส่งหลายที่อยู่" fans it
+							     into several, THIS drawer is per-pile (courier/fee) while payment stays
+							     one sale-wide choice, so it moves to its own field next to
+							     ช่องทางการขาย instead of appearing to be per-pile here too. -->
+							<div class="inline-settings">
+								<span class="field-label">วิธีการชำระเงิน<span class="required">*</span></span>
+								<CustomFancyRadioGroup
+									label=""
+									options={renderDeliveryOptions(
+										paymentMethods.filter((m) =>
+											['unknown', PaymentType.BankTransfer, PaymentType.Cod].includes(m.value)
+										)
+									)}
+									optionsPerRow={2}
+									value={draftPayment}
+									onChange={(v) => (draftPayment = v)}
+								/>
+							</div>
+						{/if}
 						<!-- Basic mode inline — never opens DrawerDelivery (the group-order drawer),
 						     per the rule that basic mode has nothing to do with it. -->
 						<div class="inline-settings">
-							<ssk-tab-header
-								class="tabs"
-								variant="button"
-								size="sm"
-								align="center"
-								color="primary"
-								buttonwidth="auto"
-							>
-								<ssk-tab-button
+							<span class="field-label">วิธีการจัดส่ง<span class="required">*</span></span>
+							<div class="shipping-method">
+								<ssk-tab-header
+									class="tabs"
 									variant="button"
 									size="sm"
 									align="center"
+									color="primary"
 									buttonwidth="auto"
-									width="100%"
-									active={draftShippingType === ShippingType.Standard}
-									on:click={() => onSelectDraftShippingType(ShippingType.Standard)}
 								>
-									<div class="tab-text">Standard</div>
-								</ssk-tab-button>
-								<ssk-tab-button
-									variant="button"
-									size="sm"
-									align="center"
-									buttonwidth="auto"
-									width="100%"
-									active={draftShippingType === ShippingType.SameDay}
-									on:click={() => onSelectDraftShippingType(ShippingType.SameDay)}
+									<ssk-tab-button
+										variant="button"
+										size="sm"
+										align="center"
+										buttonwidth="auto"
+										width="100%"
+										active={draftShippingType === ShippingType.Standard}
+										on:click={() => onSelectDraftShippingType(ShippingType.Standard)}
+									>
+										<div class="tab-text">Standard</div>
+									</ssk-tab-button>
+									<ssk-tab-button
+										variant="button"
+										size="sm"
+										align="center"
+										buttonwidth="auto"
+										width="100%"
+										active={draftShippingType === ShippingType.SameDay}
+										on:click={() => onSelectDraftShippingType(ShippingType.SameDay)}
+									>
+										<div class="tab-text">Same Day</div>
+									</ssk-tab-button>
+								</ssk-tab-header>
+								<CustomFancyRadioGroup
+									label=""
+									options={renderDeliveryOptions(
+										draftShippingType === ShippingType.Standard ? standardDeliveries : sameDayDeliveries
+									)}
+									optionsPerRow={2}
+									value={draftMethod}
+									onChange={(v) => (draftMethod = v)}
+								/>
+							</div>
+							{#if draftShippingType === ShippingType.SameDay}
+								<!-- Same Day only — which vehicle the courier dispatches. Frontend-only
+								     field for now (see DeliveryGroup.vehicleType's own comment); nothing
+								     downstream reads it until a backend field exists. -->
+								<div class="inline-settings">
+									<span class="field-label">ประเภทยานพาหนะ</span>
+									<CustomFancyRadioGroup
+										label=""
+										options={renderDeliveryOptions(vehicleTypes)}
+										optionsPerRow={2}
+										value={draftVehicleType}
+										onChange={(v) => (draftVehicleType = v)}
+									/>
+								</div>
+							{/if}
+							<div class="fee-field">
+								<ssk-input
+									size="lg"
+									label="ค่าจัดส่ง"
+									placeholder="ระบุค่าจัดส่ง"
+									autoComplete="off"
+									value={draftFee}
+									on:input={onDraftFeeInput}
+									on:change={onDraftFeeInput}
+									data-testid="sales.pile.shipping.fee"
+								/>
+								<ssk-button
+									size="lg"
+									variant="outline"
+									themeColor="primary"
+									on:click={() => (draftFee = '0')}
+									data-testid="sales.pile.shipping.fee.free"
 								>
-									<div class="tab-text">Same Day</div>
-								</ssk-tab-button>
-							</ssk-tab-header>
-							<CustomFancyRadioGroup
-								label=""
-								options={renderDeliveryOptions(
-									draftShippingType === ShippingType.Standard ? standardDeliveries : sameDayDeliveries
-								)}
-								optionsPerRow={2}
-								value={draftMethod}
-								onChange={(v) => (draftMethod = v)}
-							/>
-							<ssk-input
-								size="lg"
-								label="ค่าจัดส่ง"
-								placeholder="ระบุค่าจัดส่ง"
-								autoComplete="off"
-								limit="255"
-								value={draftFee}
-								on:input={onDraftFeeInput}
-								on:change={onDraftFeeInput}
-								data-testid="sales.pile.shipping.fee"
-							/>
+									ฟรี
+								</ssk-button>
+							</div>
 						</div>
 					{/if}
 				{:else if editingKind === DeliveryGroupKind.OnSite}
 					<div class="inline-settings">
-						<ssk-input
-							size="lg"
-							label="ค่าเดินทาง"
-							placeholder="ระบุค่าเดินทาง"
-							autoComplete="off"
-							limit="255"
-							value={draftTravelFee}
-							on:input={onDraftTravelFeeInput}
-							on:change={onDraftTravelFeeInput}
-							data-testid="sales.pile.onSite.travelfee"
-						/>
+						<div class="fee-field">
+							<ssk-input
+								size="lg"
+								label="ค่าเดินทาง"
+								placeholder="ระบุค่าเดินทาง"
+								autoComplete="off"
+								value={draftTravelFee}
+								on:input={onDraftTravelFeeInput}
+								on:change={onDraftTravelFeeInput}
+								data-testid="sales.pile.onSite.travelfee"
+							/>
+							<ssk-button
+								size="lg"
+								variant="outline"
+								themeColor="primary"
+								on:click={() => (draftTravelFee = '0')}
+								data-testid="sales.pile.onSite.travelfee.free"
+							>
+								ฟรี
+							</ssk-button>
+						</div>
 					</div>
 				{:else if editingKind === DeliveryGroupKind.PickupLater}
 					<button
@@ -857,10 +1602,36 @@
 					>
 						<ssk-icon name="outline-building-storefront" size="xs" themeColor="primary"></ssk-icon>
 						<span class="pile-row-label">รับที่สาขา</span>
-						<span class="pile-row-value">{pickupBranch?.name ?? 'เลือกสาขา'}</span>
+						<span class="pile-row-value">{editingPickupBranch ? editingPickupBranch.name : 'เลือกสาขา'}</span>
 						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
 					</button>
+					<div class="inline-settings">
+						<div class="pickup-date-field">
+							<span class="field-label">วันที่และเวลารับสินค้า<span class="required">*</span></span>
+							<ssk-date-picker
+								size="md"
+								format="dd/MM/yyyy HH:mm"
+								showTime
+								timeFormat="hm"
+								displayOk
+								locale="th"
+								placeholder="เลือกวันที่และเวลา"
+								value={draftPickupDateValue}
+								on:change={onDraftPickupDateChange}
+								data-testid="sales.pile.pickupLater.date"
+							/>
+						</div>
+					</div>
+				{:else if editingKind === DeliveryGroupKind.PickupInStore}
+					<div class="pile-row static">
+						<ssk-icon name="outline-shopping-bag" size="xs" themeColor="success"></ssk-icon>
+						<span class="pile-row-value">ส่งมอบที่เคาน์เตอร์หลังชำระเงิน</span>
+					</div>
 				{:else if editingKind === DeliveryGroupKind.Digital}
+					<!-- Nothing drafted/saved here — the contact itself lives on the buyer, so this
+					     just opens the same customer drawer every other "ส่งไปที่"/"ให้บริการที่"
+					     row already opens (see the Shipping/OnSite branch above), defaulting to
+					     whatever email/phone the selected customer already has. -->
 					<button
 						type="button"
 						class="pile-row"
@@ -875,44 +1646,100 @@
 						</span>
 						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
 					</button>
-				{:else if editingKind === DeliveryGroupKind.PickupInStore}
-					<div class="pile-row static">
-						<ssk-icon name="outline-shopping-bag" size="xs" themeColor="success"></ssk-icon>
-						<span class="pile-row-value">ส่งมอบที่เคาน์เตอร์หลังชำระเงิน</span>
-					</div>
 				{/if}
 		{#if editingKind}
-			<div class="settings-items">
-				<span class="field-label">สินค้าในหมวดนี้</span>
-				{#each itemsOfKind(editingKind) as item (item.lineId)}
-					<div class="settings-item">
-						<span class="pile-row-value">{item.product_name}</span>
-						<span class="settings-qty">x{item.qty}</span>
-					</div>
-				{/each}
-			</div>
+			<details class="settings-items" open>
+				<summary class="settings-items-toggle">
+					<span class="field-label">สินค้าในหมวดนี้</span>
+					<span class="settings-items-count">{itemsOfKind(editingKind).length}</span>
+				</summary>
+				<div class="settings-item-list">
+					{#each itemsOfKind(editingKind) as item (item.lineId)}
+						<div class="settings-item">
+							<span class="pile-row-value">{item.product_name}</span>
+							<span class="settings-qty">x{item.qty}</span>
+						</div>
+					{/each}
+				</div>
+			</details>
 		{/if}
 	</div>
-	<ssk-button
-		slot="modal-footer-left"
-		variant="outline"
-		themeColor="gray"
-		width="full"
-		style={isSavableKind ? '' : 'display:none'}
-		on:click={() => (editingKind = undefined)}
-		data-testid="sales.fulfilment.settings.cancel"
-	>
-		ยกเลิก
-	</ssk-button>
-	<ssk-button
-		slot="modal-footer-right"
-		width="full"
-		on:click={isSavableKind ? saveFulfilmentSettings : () => (editingKind = undefined)}
-		data-testid={isSavableKind ? 'sales.fulfilment.settings.save' : 'sales.fulfilment.settings.done'}
-	>
-		{isSavableKind ? 'บันทึก' : 'เสร็จสิ้น'}
-	</ssk-button>
-</Modal>
+	<div slot="footer" class="footer">
+		{#if isSavableKind}
+			<ssk-button
+				variant="outline"
+				themeColor="gray"
+				width="full"
+				on:click={() => {
+					editingKind = undefined;
+					editingPickupStoreId = undefined;
+					editingAddressId = undefined;
+				}}
+				data-testid="sales.fulfilment.settings.cancel"
+			>
+				ยกเลิก
+			</ssk-button>
+		{/if}
+		<ssk-button
+			width="full"
+			on:click={isSavableKind
+				? saveFulfilmentSettings
+				: () => {
+						editingKind = undefined;
+						editingPickupStoreId = undefined;
+						editingAddressId = undefined;
+					}}
+			data-testid={isSavableKind ? 'sales.fulfilment.settings.save' : 'sales.fulfilment.settings.done'}
+		>
+			{isSavableKind ? 'บันทึก' : 'เสร็จสิ้น'}
+		</ssk-button>
+	</div>
+</ssk-drawer>
+
+<!-- "จัดส่งหลายที่อยู่" only — see showPaymentDrawer's own comment. A small drawer of its
+     own rather than folding into the editingKind drawer above: payment isn't a
+     DeliveryGroupKind and isn't scoped to any one pile, so it doesn't fit that drawer's
+     per-pile title/footer logic. -->
+<ssk-drawer
+	width="min(30rem, 100vw)"
+	side="right"
+	show={showPaymentDrawer}
+	bodypadding="20px"
+	on:close={() => (showPaymentDrawer = false)}
+>
+	<ssk-drawer-header
+		slot="header"
+		title="วิธีการชำระเงิน"
+		close={() => (showPaymentDrawer = false)}
+	/>
+	<div class="settings-body" slot="body">
+		<CustomFancyRadioGroup
+			label=""
+			options={renderDeliveryOptions(
+				paymentMethods.filter((m) =>
+					['unknown', PaymentType.BankTransfer, PaymentType.Cod].includes(m.value)
+				)
+			)}
+			optionsPerRow={2}
+			value={draftPaymentStandalone}
+			onChange={(v) => (draftPaymentStandalone = v)}
+		/>
+	</div>
+	<div slot="footer" class="footer">
+		<ssk-button
+			variant="outline"
+			themeColor="gray"
+			width="full"
+			on:click={() => (showPaymentDrawer = false)}
+			data-testid="sales.payment.cancel"
+		>
+			ยกเลิก
+		</ssk-button>
+		<ssk-button width="full" on:click={savePaymentDrawer} data-testid="sales.payment.save">
+			บันทึก
+		</ssk-button>
+	</div>
+</ssk-drawer>
 
 <DrawerCustomerAddress
 	showDrawer={showDrawerCustomer}
@@ -920,9 +1747,7 @@
 	{buyer}
 	bind:addresses
 	bind:idAddress
-	needsAddress={$groupOrderMode
-		? isPos && fullfilmentType === FullfilmentType.ShopDelivery
-		: hasShip || hasOnSite}
+	{needsAddress}
 	openOn={customerDrawerOpenOn}
 	onSelectCustomer={onClickSelectCustomer}
 	onSelectAddress={onClickSelectAddress}
@@ -938,32 +1763,30 @@
 	close={() => (showPickupModal = false)}
 />
 
-<DrawerOnline
-	bind:showDrawer={showDrawerOnlineChannel}
-	bind:buyerInput={buyer}
-	bind:idAddress
-	toggleDrawer={toggleDrawerOnlineChannel}
-	{onClickSelectCustomerOnline}
+<!-- A second instance for "เพิ่มตัวเลือกรับสินค้า" → รับภายหลัง — its own modalId/
+     testIdPrefix so it doesn't collide with the one above (see the ids-must-be-unique
+     fix in CartItem.svelte's remove/zero-qty modals), and its branch list is pre-filtered
+     to exclude whatever a รับภายหลัง pile is already using. -->
+<ModalPickupBranch
+	show={showAddPileBranchModal}
+	branches={pickupLaterBranchOptions}
+	sellingStoreId={$currentStore?.id ?? ''}
+	onSelect={onSelectAddPileBranch}
+	close={() => (showAddPileBranchModal = false)}
+	modalId="pickup-branch-pile"
+	testIdPrefix="sales.pile.pickup"
 />
 
-<DrawerDelivery
-	showDrawer={showDeliveryDrawer}
-	toggleDrawer={toggleDeliveryDrawer}
-	{addresses}
-	{branches}
-	defaultPickupStoreId={pickupStoreId}
-	{openMethodGroupId}
-	buyerName={buyer?.name ?? ''}
-	hasBuyer={!!buyer}
-	onCreateAddress={(groupId) => {
-		pendingAddressGroupId = groupId;
-		toggleDeliveryDrawer();
-		openCustomerDrawer('address');
-	}}
-	onEditCustomer={() => {
-		toggleDeliveryDrawer();
-		openCustomerDrawer('customer');
-	}}
+<!-- "เพิ่มตัวเลือกรับสินค้า" → จัดส่งจากหน้าร้าน (a second pile) AND a pile's own settings
+     drawer re-picking its address both share this one modal — pileAddressPickerTarget tells
+     onSelectPileAddress which of the two it is (see openAddShippingPile / the settings
+     drawer's address row above). shippingAddressOptions already excludes every address
+     another pile is using, so there's nothing left for a cashier to pick a duplicate. -->
+<ModalAddPileAddress
+	show={showPileAddressModal}
+	addresses={shippingAddressOptions}
+	onSelect={onSelectPileAddress}
+	close={() => (showPileAddressModal = false)}
 />
 
 <!-- Collapsed, the sale's context and the list's own header are two thin rows and
@@ -985,7 +1808,9 @@
 				<span class="top-summary-text">
 					<ssk-text size="xs" color="gray.500">
 						{#if isPos}
-							{#if orderDeliveryI18nKey(fullfilmentType)}
+							{#if isMultiFulfilment}
+								หลายรูปแบบ
+							{:else if orderDeliveryI18nKey(fullfilmentType)}
 								<ssk-i18n-translate
 									key={orderDeliveryI18nKey(fullfilmentType)}
 									lang={$currentLanguage.code}
@@ -994,6 +1819,23 @@
 							{:else}
 								{fullfilmentMeta[fullfilmentType]?.label ?? ''}
 							{/if}
+						{:else if isOnline}
+							<!-- POS's collapsed strip names its one decision (fulfilment type); online
+							     has no such single field, so this names its three instead — the
+							     sub-channel, how it's paid, and the courier actually picked in
+							     "วิธีการจัดส่ง" (methodLabel already renders the 'platform' sentinel
+							     as "ตามแพลตฟอร์ม (...)" for a marketplace sub-channel). Once
+							     "จัดส่งหลายที่อยู่" is in play, that third slot can no longer name one
+							     courier — each pile has its own — so it names the fact itself instead. -->
+							{subChannelOption?.label ?? 'ไม่ระบุ'} ·
+							{getLabelFromValue($orderData.paymentType, 'paymentMethods')} ·
+							{hasMultiAddressShipping
+								? 'จัดส่งหลายที่อยู่'
+								: singleDeliveryGroup?.method
+									? methodLabel(singleDeliveryGroup.method)
+									: 'ยังไม่เลือกขนส่ง'}
+						{:else if isLinkBill}
+							Link bill
 						{/if}
 					</ssk-text>
 				</span>
@@ -1092,16 +1934,48 @@
 						{/each}
 					</ssk-dropdown>
 				</div>
-			{:else if isPos && !$groupOrderMode}
-				<!-- Once a group order exists, each group picks its OWN fulfilment type
-				     (DrawerDelivery's per-group dropdown) — a single sale-level choice here
-				     would no longer describe the sale, which can now hold several at once. In
-				     basic mode this dropdown still means something even with several
-				     categories present: it is the DEFAULT every physical line not re-picked by
-				     the cashier follows (see handleSelectOption's ResetPhysicalLineFulfilment). -->
+			{:else if isPos}
+				<!-- This dropdown is the DEFAULT every physical line not re-picked by the
+				     cashier follows (see handleSelectOption's ResetPhysicalLineFulfilment), even
+				     with several categories present at once via "เพิ่มตัวเลือกรับสินค้า". -->
 				<div class="field">
-					<span class="field-label">
-						รูปแบบการรับสินค้า{#if isMultiFulfilment}<span class="field-hint"> · ตั้งค่าแต่ละแบบที่ข้อมูลการรับสินค้า</span>{/if}
+					<span class="field-label-row">
+						<span class="field-label">
+							รูปแบบการรับสินค้า
+						</span>
+						{#if cartList.length > 0}
+							<!-- Opening a pile adds its section to the cart list below AND makes it
+							     the active one (activeFulfilmentPile) — shown as a highlight on the
+							     section itself (CartFulfilmentPiles), not a separate status line here.
+							     The cashier can still drag existing lines into any pile regardless of
+							     which one is active; being active only decides where a freshly TAPPED
+							     product lands. -->
+							<span class="pile-adder-wrap" bind:this={pileMenuWrapEl}>
+								<ssk-button
+									size="sm"
+									variant="ghost"
+									on:click={() => (showPileMenu = !showPileMenu)}
+									data-testid="sales.pile.add"
+								>
+									<ssk-icon name="outline-plus" size="xs"></ssk-icon>
+									เพิ่มตัวเลือกรับสินค้า
+								</ssk-button>
+								{#if showPileMenu}
+									<FulfilmentMenu
+										options={pileMenuOptions}
+										positionStyle="top:calc(100% + 0.25rem);right:0;width:240px"
+										menuTestId="sales.pile.add.menu"
+										optionTestIdPrefix="sales.pile.add.option"
+										on:select={(e) => {
+											const option = pileTypeOptions.find(({ kind }) => kind === e.detail);
+											if (!option) return;
+											onSelectPileType(option.kind);
+											showPileMenu = false;
+										}}
+									/>
+								{/if}
+							</span>
+						{/if}
 					</span>
 
 					<ssk-dropdown
@@ -1117,24 +1991,24 @@
 							{#if isMultiFulfilment}
 							<span class="selector-body" data-testid="sales.fulfilment.multi">
 								<ssk-icon name="outline-squares-2x2" size="md" themeColor="primary"></ssk-icon>
-								<span class="selector-title">หลายรูปแบบ ({presentKinds.length} หมวด)</span>
+								<span class="selector-title">หลายรูปแบบ ({displayKinds.length} หมวด)</span>
 							</span>
 							{:else}
 							<span class="selector-body">
 								<ssk-icon
-									name={fullfilmentMeta[fullfilmentType]?.icon ?? 'outline-shopping-bag'}
+									name={fullfilmentMeta[displayFullfilmentType]?.icon ?? 'outline-shopping-bag'}
 									size="md"
 									themeColor="primary"
 								></ssk-icon>
 								<span class="selector-title">
-									{#if orderDeliveryI18nKey(fullfilmentType)}
+									{#if orderDeliveryI18nKey(displayFullfilmentType)}
 										<ssk-i18n-translate
-											key={orderDeliveryI18nKey(fullfilmentType)}
+											key={orderDeliveryI18nKey(displayFullfilmentType)}
 											lang={$currentLanguage.code}
 											fallbackLang="default"
 										/>
 									{:else}
-										{fullfilmentMeta[fullfilmentType]?.label ?? ''}
+										{fullfilmentMeta[displayFullfilmentType]?.label ?? ''}
 									{/if}
 								</span>
 								{#if isMixedReceive}<span class="selector-mixed">· รับบางส่วน</span>{/if}
@@ -1177,22 +2051,20 @@
 					<span class="field-label">
 						ลูกค้า{#if customerRequired}<span class="required">*</span>{/if}
 					</span>
-					{#if isPos && !$groupOrderMode && cartList.length > 0}
-						<!-- Voluntary split: today a cashier can only ever get the delivery drawer
-						     opened on them by an auto-split (digital item or mixed origin). This is
-						     the only manual entry point, so it is gated on the same condition the
-						     S2 row itself depends on being false (not split yet). Available for all
-						     three POS fulfilment types (pickup now/later/ship) — enableGroupOrder
-						     (not addUserDeliveryGroup) is what keeps the resulting split alive for
-						     the two pickup fulfilments, whose own sync guard otherwise clears any
-						     group with no digital item in the cart. -->
+					<!-- Online's own "เพิ่มตัวเลือกรับสินค้า" equivalent — there's only ever one
+					     legal kind to add (Shipping, see lineFulfilmentOptions), so this skips
+					     straight to openAddShippingPile's own address-picker modal instead of
+					     POS's kind-choosing menu. Marketplace channels (Shopee/Lazada/...) have
+					     no customer address book of their own to pick a second address from. -->
+					{#if isOnline && !deliveryCtx.marketplace && buyer?.name}
 						<ssk-button
 							size="sm"
 							variant="ghost"
-							on:click={createGroupOrder}
-							data-testid="sales.delivery.creategroup"
+							on:click={openAddShippingPile}
+							data-testid="sales.online.pile.add"
 						>
-							สร้างคำสั่งซื้อกลุ่ม
+							<ssk-icon name="outline-plus" size="xs"></ssk-icon>
+							จัดส่งหลายที่อยู่
 						</ssk-button>
 					{/if}
 				</span>
@@ -1203,7 +2075,7 @@
 							type="button"
 							class="customer-main"
 							title={customerTooltip}
-							on:click={isOnline ? toggleDrawerOnlineChannel : () => openCustomerDrawer('customer')}
+							on:click={() => openCustomerDrawer('customer')}
 							data-testid="sales.customer.open"
 						>
 							<span class="customer-name">{buyer.name}</span>
@@ -1218,9 +2090,12 @@
 							นำออก
 						</button>
 
-						{#if isPos && fullfilmentType === FullfilmentType.ShopDelivery}
+						{#if needsAddress && !hasMultiAddressShipping}
 							<!-- The address belongs to the customer, so it sits inside their block —
-							     one row, tappable, opening the same drawer on its address half. -->
+							     one row, tappable, opening the same drawer on its address half. Hidden
+							     once "จัดส่งหลายที่อยู่" is in play: a single buyer.address field can't
+							     speak for N different per-pile addresses any more, and each badge below
+							     already names its own (see CartFulfilmentPiles' own addressText). -->
 							<button
 								type="button"
 								class="address-inline"
@@ -1246,188 +2121,200 @@
 					<button
 						type="button"
 						class="field-control empty"
-						on:click={isOnline ? toggleDrawerOnlineChannel : () => openCustomerDrawer('customer')}
+						on:click={() => openCustomerDrawer('customer')}
 						data-testid="sales.customer.open"
 					>
-						<ssk-icon name="outline-user" size="sm" themeColor="stroke"></ssk-icon>
-						<span class="field-value">ลูกค้าหน้าร้าน</span>
+						<ssk-icon name="outline-user" size="sm" themeColor="primary"></ssk-icon>
+						<span class="field-value">{isOnline ? 'เลือกลูกค้า' : 'ลูกค้าหน้าร้าน'}</span>
 						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
 					</button>
 				{/if}
 			</div>
 
-			{#if $groupOrderMode && $showDeliveryDetail}
-				{#if !$hasSplitDelivery}
-					<!-- The one row S2 adds to the whole cart panel — only for the lone-digital-
-					     parcel case (an e-voucher needs an email even alone in the cart). Once a
-					     real split exists, the group cards below are the whole "การจัดส่ง" picture
-					     on their own — this row would just repeat them as a redundant aggregate. -->
-					<div class="field">
-						<span class="field-label">การจัดส่ง</span>
-						<button
-							type="button"
-							class="detail-row"
-							class:warn={$deliverySummary.missing.length > 0}
-							on:click={() => (showDeliveryDrawer = true)}
-							data-testid="sales.delivery.open"
-						>
-							<ssk-icon
-								name="outline-truck"
-								size="sm"
-								themeColor={$deliverySummary.missing.length > 0 ? 'warning' : 'primary'}
-							></ssk-icon>
-							<span class="field-value">{deliverySummaryText}</span>
-							<span class="detail-action">จัดการ</span>
-							{#if $deliverySummary.missing.length > 0}
-								<span class="detail-row-warn">
-									<ssk-icon name="outline-exclamation-triangle" size="xs" themeColor="warning"
-									></ssk-icon>
-									พัสดุ {$deliverySummary.firstMissingSeq}
-									{firstMissingReason}
-								</span>
-							{/if}
-						</button>
-					</div>
-				{/if}
-			{/if}
-
-			{#if isLinkBill}
-				<!-- The link carries the rest of the journey: the buyer fills in their own phone
-				     and address there, and the link stops working after 30 minutes. -->
-				<div class="link-note" data-testid="sales.linkbill.note">
-					<ssk-icon name="outline-link" size="sm" themeColor="primary"></ssk-icon>
-					<span>
-						ลูกค้าจะกรอกเบอร์โทรและที่อยู่เองในลิงก์ · ลิงก์หมดอายุใน <b>30 นาที</b>
-					</span>
-				</div>
-			{/if}
-
-			<!-- Rows that only exist when the sale needs them, full width under the cards. -->
-			{#if needsPickupBranch}
-				<!-- "รับภายหลัง" needs a place to come back to. One line states the branch and
-				     enough of its address to tell branches apart; the full list (with each
-				     address on its own lines) lives in the modal (picking a branch is the same
-				     kind of job as picking an address — one choice out of several multi-line
-				     options, better suited to a card list than a native dropdown menu). -->
+			{#if isOnline && hasMultiAddressShipping && !isMarketplaceChannel(subChannel)}
+				<!-- Same dest-trigger-opens-a-drawer pattern every other field below uses
+				     (สาขาที่รับ, ข้อมูลการจัดส่ง, ...) — only surfaces once "จัดส่งหลายที่อยู่"
+				     is in play; otherwise payment still rides inside วิธีการจัดส่ง's own
+				     per-pile drawer, see that drawer's own comment. -->
 				<div class="field">
-					<span class="field-label">สาขาที่รับสินค้า</span>
+					<span class="field-label">วิธีการชำระเงิน<span class="required">*</span></span>
 					<button
 						type="button"
 						class="dest-trigger"
-						on:click={() => (showPickupModal = true)}
-						data-testid="sales.pickup.open"
+						on:click={openPaymentDrawer}
+						data-testid="sales.payment.open"
 					>
-						<ssk-icon name="outline-building-storefront" size="sm" themeColor="primary"></ssk-icon>
+						<ssk-icon name="outline-credit-card" size="sm" themeColor="primary"></ssk-icon>
 						<span class="dest-trigger-value">
-							{pickupBranch ? `รับที่สาขา ${pickupBranch.name}` : 'เลือกสาขาที่ลูกค้าจะมารับ'}
+							{getLabelFromValue($orderData.paymentType, 'paymentMethods')}
 						</span>
 						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
 					</button>
 				</div>
 			{/if}
 
-			{#if needsDeliveryInfo}
-				<!-- ShopDelivery/OnSite's own destination+fee — the same two fields the per-group
-				     card inside the drawer already shows, surfaced here too so the ordinary,
-				     unsplit 80-90% sale isn't the one case with nowhere to confirm them short of
-				     opening the drawer some other way first. Tapping either row just opens that
-				     same drawer — there is only one group to manage yet, so the cashier lands
-				     straight on its one card. -->
+			<!-- Single-bucket-only rows, right after ลูกค้า — "รูปแบบการรับสินค้า" above already
+			     states the sale's one kind, so the only bucket there is needs no badge of its
+			     own repeating it; its settings live here instead. The moment a second bucket
+			     exists for ANY reason, CartFulfilmentPiles shows every bucket as a badge pile
+			     with its own gear icon and these rows stop showing (isSingleBucket), so there
+			     is never a second, independently-resolved entry point into the same settings. -->
+			{#if isSingleBucket && hasPickupLater}
 				<div class="field">
-					<span class="field-label">ข้อมูลการจัดส่ง</span>
-					{#if !selectedAddress}
-						<button
-							type="button"
-							class="dest-trigger empty"
-							on:click={() => openCustomerDrawer('address')}
-							data-testid="sales.deliveryinfo.address.open"
-						>
-							<ssk-icon name="outline-exclamation-triangle" size="xs" themeColor="error"
-							></ssk-icon>
-							<span class="dest-trigger-value">ลูกค้ายังไม่มีที่อยู่ — กรุณาเพิ่มที่อยู่จัดส่ง</span>
-						</button>
-					{/if}
-					{#if fullfilmentType === FullfilmentType.ShopDelivery}
-						<button
-							type="button"
-							class="dest-trigger"
-							on:click={openStandardDeliveryMethod}
-							data-testid="sales.deliveryinfo.method.open"
-						>
-							<ssk-icon name="outline-truck" size="sm" themeColor="primary"></ssk-icon>
-							<span class="dest-trigger-value">
-								{#if singleDeliveryGroup?.method}
-									{methodLabel(singleDeliveryGroup.method)} ·
-									{singleDeliveryGroup.shippingFee !== undefined
-										? formatPriceWithBath(singleDeliveryGroup.shippingFee)
-										: 'ยังไม่ระบุค่าส่ง'}
-								{:else}
-									ระบุขนส่งและค่าจัดส่ง
-								{/if}
-							</span>
-							<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
-						</button>
-					{:else}
-						<button
-							type="button"
-							class="dest-trigger"
-							on:click={() => (showDeliveryDrawer = true)}
-							data-testid="sales.deliveryinfo.travelfee.open"
-						>
-							<ssk-icon name="outline-wrench-screwdriver" size="sm" themeColor="primary"
-							></ssk-icon>
-							<span class="dest-trigger-value">
-								ค่าเดินทาง ·
-								{singleDeliveryGroup?.shippingFee !== undefined
-									? formatPriceWithBath(singleDeliveryGroup.shippingFee)
-									: 'ไม่ระบุค่าเดินทาง'}
-							</span>
-							<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
-						</button>
-					{/if}
+					<span class="field-label">สาขาที่รับ</span>
+					<!-- Single bucket means this is the one and only รับภายหลัง pile, so — same
+					     reasoning as วันที่และเวลารับสินค้า below — this opens the branch picker
+					     modal directly instead of detouring through the settings drawer first.
+					     editingKind/editingPickupStoreId stay undefined here (never set), which is
+					     exactly the "no specific pile" case onSelectPickupBranch already falls back
+					     to: it writes straight to the sale's own default pickupStoreId. -->
+					<button
+						type="button"
+						class="dest-trigger"
+						on:click={() => (showPickupModal = true)}
+						data-testid="sales.pickup.branch.open"
+					>
+						<ssk-icon name="outline-building-storefront" size="sm" themeColor="primary"></ssk-icon>
+						<span class="dest-trigger-value">
+							{branches.find((b) => b.id === (singlePickupLaterGroup?.pickupStoreId ?? pickupStoreId))
+								?.name ?? 'เลือกสาขาที่ลูกค้าจะมารับ'}
+						</span>
+						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
+					</button>
+				</div>
+				<div class="field quick-pickup-datetime-field">
+					<!-- Single bucket means there is only ever this one รับภายหลัง group to edit, so
+					     this opens the date-time picker itself directly — unlike สาขาที่รับ above
+					     (still a real modal pick), there's no intermediate drawer step worth a detour
+					     through, the way CartFulfilmentPiles' own multi-pile gear icon needs one.
+					     Own `position: relative` (quick-pickup-datetime-field, not just .field) gives
+					     <ssk-date-picker>'s absolutely-positioned calendar popup a containing block
+					     right here — without one nearby it falls back to the page's own, which is why
+					     this one opened detached from the field while the drawer's own copy (already
+					     inside a positioned drawer) never did. -->
+					<span class="field-label">วันที่และเวลารับสินค้า<span class="required">*</span></span>
+					<ssk-date-picker
+						size="md"
+						format="dd/MM/yyyy HH:mm"
+						showTime
+						timeFormat="hm"
+						displayOk
+						locale="th"
+						placeholder="เลือกวันที่และเวลา"
+						value={quickPickupDateTimeValue}
+						on:change={onQuickPickupDateTimeChange}
+						data-testid="sales.pickup.datetime.open"
+					/>
 				</div>
 			{/if}
 
-			{#if !$groupOrderMode && cartList.length > 0 && showFulfilmentCards}
-				<div class="field" data-testid="sales.fulfilment.cards">
-					<span class="field-label">ข้อมูลการรับสินค้า</span>
-					<div class="fulfil-cards">
-						{#each presentKinds as kind (kind)}
-							{@const st = kindStatus(kind)}
-							<button
-								type="button"
-								class="fulfil-card"
-								class:warn={st.warn}
-								on:click={() => openEditingKind(kind)}
-								data-testid={`sales.fulfilment.card.${kind}`}
-							>
-								<span class="fulfil-card-head">
-									<ssk-icon name={groupKindIcon(kind)} size="xs" themeColor={st.warn ? 'error' : 'primary'}></ssk-icon>
-									<span class="fulfil-card-title">{basicCategoryLabel(kind)}</span>
-									<span class="fulfil-card-count">{itemsOfKind(kind).length}</span>
-								</span>
-								<span class="fulfil-card-status">{st.text}</span>
-							</button>
-						{/each}
-					</div>
+			{#if isSingleBucket && hasShip}
+				<div class="field">
+					<span class="field-label">
+						{isOnline ? 'ข้อมูลการชำระและจัดส่ง' : 'ข้อมูลการจัดส่ง'}{#if shipInfoMissing}<span
+								class="required">*</span
+							>{/if}
+					</span>
+					<button
+						type="button"
+						class="dest-trigger"
+						on:click={() => openEditingKind(DeliveryGroupKind.Shipping)}
+						data-testid="sales.deliveryinfo.method.open"
+					>
+						<ssk-icon name="outline-truck" size="sm" themeColor="primary"></ssk-icon>
+						<span
+							class="dest-trigger-value"
+							class:placeholder={!shippingGroup?.method || shippingGroup.method === 'unknown'}
+						>
+							{#if isOnline}
+								{getLabelFromValue($orderData.paymentType, 'paymentMethods')} ·
+							{/if}
+							{#if shippingGroup?.method && shippingGroup.method !== 'unknown'}
+								{methodLabel(shippingGroup.method)} · {formatPriceWithBath(
+									shippingGroup.shippingFee ?? 0
+								)}
+							{:else}
+								ระบุขนส่งและค่าจัดส่ง
+							{/if}
+						</span>
+						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
+					</button>
 				</div>
 			{/if}
-			{#if isOnline && buyer?.name}
-				<ssk-button
-					size="xs"
-					variant="outline"
-					width="full"
-					themeColor="button"
-					on:click={toggleDrawerOnlineChannel}
-				>
-					<ssk-icon slot="postfix" name="solid-chevron-right" themeColor="stroke"></ssk-icon>
-					<ssk-text size="sm" color="gray.800">
-						{getLabelFromValue($orderData.saleChannel?.saleOrigin, 'salesChannels')}
-						| {getLabelFromValue($orderData.paymentType, 'paymentMethods')}
-						| {getLabelFromValue($orderData.deliveries?.[0]?.method, 'standardDeliveries')}
-					</ssk-text>
-				</ssk-button>
+
+			{#if isSingleBucket && hasOnSite}
+				<div class="field">
+					<span class="field-label">
+						ข้อมูลการจัดส่ง{#if onSiteInfoMissing}<span class="required">*</span>{/if}
+					</span>
+					<button
+						type="button"
+						class="dest-trigger"
+						on:click={() => openEditingKind(DeliveryGroupKind.OnSite)}
+						data-testid="sales.deliveryinfo.travelfee.open"
+					>
+						<ssk-icon name="outline-wrench-screwdriver" size="sm" themeColor="primary"
+						></ssk-icon>
+						<span class="dest-trigger-value">
+							{#if onSiteGroup?.onSiteLocation === 'store'}
+								{branches.find((b) => b.id === onSiteGroup?.onSiteStoreId)?.name ?? 'เลือกสาขา'} ·
+								ค่าเดินทาง · {formatPriceWithBath(onSiteGroup?.shippingFee ?? 0)}
+							{:else if onSiteGroup?.onSiteLocation === 'customer'}
+								ที่อยู่ลูกค้า · ค่าเดินทาง · {formatPriceWithBath(onSiteGroup?.shippingFee ?? 0)}
+							{:else}
+								เลือกรับบริการที่ร้านหรือที่อยู่ลูกค้า
+							{/if}
+						</span>
+						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
+					</button>
+				</div>
 			{/if}
+
+			{#if isLinkBill}
+				<!-- The cashier can pre-pick the customer's address above, same as any other
+				     channel now — this note just covers what the link itself still handles:
+				     anything left unset, and its own 30-minute expiry. -->
+				<div class="link-note" data-testid="sales.linkbill.note">
+					<ssk-icon name="outline-link" size="sm" themeColor="primary"></ssk-icon>
+					<span>
+						{#if selectedAddress}
+							ลิงก์จะส่งไปที่ที่อยู่ที่เลือกไว้
+						{:else}
+							ถ้าไม่ระบุ ลูกค้าจะกรอกเบอร์โทรและที่อยู่เองในลิงก์
+						{/if}
+						· ลิงก์หมดอายุใน <b>30 นาที</b>
+					</span>
+				</div>
+			{/if}
+
+			<!-- Digital's own contact row — same isSingleBucket gating as สาขาที่รับ/ข้อมูลการจัดส่ง
+			     above: once a second bucket exists for ANY reason, CartFulfilmentPiles' own
+			     Digital badge (now with its own gear icon, see hasSettings) takes over as the
+			     one entry point, so this inline row must stop showing then too — otherwise
+			     there'd be two places to manage the same contact at once. -->
+			{#if needsDigitalContact && isSingleBucket}
+				<div class="field">
+					<span class="field-label">ส่งสินค้าดิจิทัลไปที่</span>
+					<button
+						type="button"
+						class="dest-trigger"
+						class:empty={!buyer?.email && !buyer?.phone}
+						on:click={() => openCustomerDrawer('customer')}
+						data-testid="sales.deliveryinfo.digital.open"
+					>
+						<ssk-icon
+							name={buyer?.email || buyer?.phone ? 'outline-bolt' : 'outline-exclamation-triangle'}
+							size="sm"
+							themeColor={buyer?.email || buyer?.phone ? 'primary' : 'error'}
+						></ssk-icon>
+						<span class="dest-trigger-value">
+							{buyer?.email || maskPhoneMiddle(buyer?.phone) || 'ยังไม่มีอีเมลหรือเบอร์โทร — เพิ่มลูกค้า'}
+						</span>
+						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
+					</button>
+				</div>
+			{/if}
+
 		{/if}
 	</div>
 
@@ -1477,36 +2364,22 @@
 <!-- The list simply takes every pixel the panel has left, in both states: folding the
      header above hands it that space too, and the totals + pay button below keep their
      own. Nothing to drag, nothing to remember. -->
-<div class={`cart-item${cartList.length > 0 && !($groupOrderMode && $hasSplitDelivery) ? '' : '-no-scroll'}`}>
-	{#if $groupOrderMode && $hasSplitDelivery}
-		<!-- Keep the item summary and group section outside the collapsible sale setup so
-		     collapsing the top leaves the order groups immediately visible. -->
-		<div class="group-order-head">
-			<span class="field-label">คำสั่งขายกลุ่ม</span>
-			<ssk-button
-				size="sm"
-				variant="ghost"
-				on:click={addAnotherGroup}
-				data-testid="sales.delivery.addgroup"
-			>
-				<ssk-icon name="outline-plus" size="xs"></ssk-icon>
-				เพิ่มกลุ่ม
-			</ssk-button>
-		</div>
-		<DeliveryGroupCards
-			groups={$deliveryGroups}
-			items={cartList ?? []}
-			activeId={$activeDeliveryGroupId}
-			on:activate={(e) =>
-				setActiveDeliveryGroup($activeDeliveryGroupId === e.detail ? undefined : e.detail)}
-			on:open={() => (showDeliveryDrawer = true)}
-		/>
-	{:else if cartList.length > 0}
+<div class={`cart-item${cartList.length > 0 ? '' : '-no-scroll'}`}>
+	{#if cartList.length > 0}
 		<CartFulfilmentPiles
 			items={cartList}
 			saleDefaultKind={physicalKindFor(fullfilmentType, isDelivery)}
 			lineCtx={{ channel: deliveryCtx.channel, marketplace: !!deliveryCtx.marketplace }}
 			honourReceiveMode={allowPartialReceive && isDelivery}
+			openPiles={isPos ? $openFulfilmentPiles : isOnline ? onlineOpenPiles : []}
+			{branches}
+			salePickupStoreId={pickupStoreId}
+			{addresses}
+			deliveryGroups={liveGroups}
+			onRemoveOpenPile={removeOpenFulfilmentPile}
+			activePile={isPos ? $activeFulfilmentPile : isOnline ? onlineActivePile : undefined}
+			onSetActivePile={isPos || isOnline ? onSetActivePile : undefined}
+			onEditPile={openEditingKind}
 		/>
 	{:else}
 		<EmptyCart />
@@ -1533,88 +2406,91 @@
 		color: var(--ssk-colors-primary-500);
 	}
 
-	.fulfil-cards {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
-		gap: 0.375rem;
-	}
-
-	.fulfil-card {
-		box-sizing: border-box;
-		display: grid;
-		gap: 0.125rem;
-		min-width: 0;
-		padding: 0.375rem 0.5rem;
-		border: 1px solid var(--ssk-colors-gray-200);
-		border-radius: 8px;
-		background: white;
-		font: inherit;
-		text-align: left;
-		cursor: pointer;
-	}
-
-	.fulfil-card:hover {
-		border-color: var(--ssk-colors-primary-300, #f4a07f);
-	}
-
-	.fulfil-card.warn {
-		border-color: var(--ssk-colors-error-200, #fecaca);
-		background: var(--ssk-colors-error-50, #fef2f2);
-	}
-
-	.fulfil-card-head {
-		display: flex;
-		align-items: center;
-		gap: 0.25rem;
-		min-width: 0;
-	}
-
-	.fulfil-card-title {
-		font-size: var(--ssk-font-size-xs);
-		font-weight: 600;
-		color: var(--ssk-colors-gray-800);
-	}
-
-	.fulfil-card-count {
-		margin-left: auto;
-		min-width: 1.125rem;
-		padding: 0 0.25rem;
-		border-radius: 999px;
-		background: var(--ssk-colors-gray-100);
-		font-size: 0.6875rem;
-		text-align: center;
-		color: var(--ssk-colors-gray-600);
-	}
-
-	.fulfil-card-status {
-		overflow: hidden;
-		white-space: nowrap;
-		text-overflow: ellipsis;
-		font-size: 0.6875rem;
-		color: var(--ssk-colors-gray-500);
-	}
-
-	.fulfil-card.warn .fulfil-card-status {
-		color: var(--ssk-colors-error-600, #dc2626);
-	}
-
 	.settings-body {
 		display: grid;
-		gap: 0.5rem;
+		gap: 1.5rem;
 		width: 100%;
 		box-sizing: border-box;
 		text-align: left;
 	}
 
+	.footer {
+		display: flex;
+		gap: 0.75rem;
+		width: 100%;
+	}
+
+	.footer ssk-button {
+		flex: 1 1 0;
+		min-width: 0;
+	}
+
 	.settings-items {
+		overflow: hidden;
+		border: 1px solid var(--ssk-colors-gray-100);
+		border-radius: 8px;
+		background: var(--ssk-colors-gray-50, #f9fafb);
+	}
+
+	.settings-items-toggle {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-height: 2.5rem;
+		padding: 0.5rem 0.625rem;
+		cursor: pointer;
+		list-style: none;
+	}
+
+	.settings-items-toggle::-webkit-details-marker {
+		display: none;
+	}
+
+	.settings-items-toggle .field-label {
+		font-size: var(--ssk-font-size-sm);
+		font-weight: 500;
+	}
+
+	.settings-items-toggle::after {
+		width: 0.375rem;
+		height: 0.375rem;
+		margin-left: auto;
+		border-right: 1.5px solid var(--ssk-colors-gray-500);
+		border-bottom: 1.5px solid var(--ssk-colors-gray-500);
+		content: '';
+		transform: rotate(45deg) translateY(-2px);
+		transition: transform 150ms ease;
+	}
+
+	.settings-items:not([open]) .settings-items-toggle::after {
+		transform: rotate(-45deg) translateY(2px);
+	}
+
+	.settings-items-count {
+		min-width: 1.25rem;
+		padding: 0 0.25rem;
+		border-radius: 999px;
+		background: white;
+		font-size: var(--ssk-font-size-xs);
+		text-align: center;
+		color: var(--ssk-colors-gray-500);
+	}
+
+	.settings-item-list {
 		display: grid;
 		gap: 0.25rem;
-		margin-top: 0.5rem;
+		padding: 0.5rem 0.625rem;
+		border-top: 1px solid var(--ssk-colors-gray-100);
 	}
 
 	.settings-item {
 		display: flex;
+		align-items: center;
 		gap: 0.5rem;
+		min-width: 0;
+		padding: 0.375rem 0.5rem;
+		border-radius: 6px;
+		background: white;
 		font-size: var(--ssk-font-size-xs);
 	}
 
@@ -1634,7 +2510,7 @@
 		border-radius: 6px;
 		background: white;
 		font: inherit;
-		font-size: var(--ssk-font-size-xs);
+		font-size: var(--ssk-font-size-md, 1rem);
 		text-align: left;
 		cursor: pointer;
 	}
@@ -1665,24 +2541,56 @@
 
 	.inline-settings {
 		display: grid;
-		gap: 0.625rem;
+		gap: 1.5rem;
+	}
+
+	.inline-settings > .field-label {
+		font-size: var(--ssk-font-size-lg, 18px);
+		font-weight: 400;
+		line-height: 1;
+		color: var(--ssk-colors-text-900);
+	}
+
+	.shipping-method {
+		display: grid;
+		gap: 0.75rem;
+	}
+
+	.fee-field {
+		display: flex;
+		align-items: flex-end;
+		gap: 0.5rem;
+	}
+
+	.fee-field ssk-input {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.fee-field ssk-button {
+		padding-bottom: 0.25em;
+	}
+
+	.pickup-date-field {
+		display: grid;
+		gap: 0.5rem;
+	}
+
+	.pickup-date-field :global(ssk-date-picker) {
+		width: 100%;
 	}
 
 	.cart-item {
-		/* The one region that scrolls, and the only one that yields. `flex: 1 1 0` (not
-		   `auto`): a basis of 0 means a long list cannot claim its own content height
-		   and push the totals and the pay button out of the panel — it takes what is
-		   left over and scrolls inside that. The floor is about one row, low enough
-		   that the money and the two terminal buttons below always fit first. */
+		/* Let the list yield all available height; overflow stays scrollable inside it. */
 		flex: 1 1 0;
-		min-height: 3.25rem;
+		min-height: 0;
 		overflow-y: auto;
 		padding: 0.5rem;
 	}
 
 	.cart-item-no-scroll {
 		flex: 1 1 0;
-		min-height: 3.25rem;
+		min-height: 0;
 		overflow-y: auto;
 		padding: 0;
 	}
@@ -1780,6 +2688,10 @@
 		white-space: nowrap;
 		font-size: var(--ssk-font-size-sm);
 		color: var(--ssk-colors-gray-800);
+	}
+
+	.dest-trigger-value.placeholder {
+		color: var(--ssk-colors-gray-500);
 	}
 
 	.dest-trigger.empty {
@@ -1937,6 +2849,16 @@
 		padding-bottom: 0.5rem;
 	}
 
+	.quick-pickup-datetime-field {
+		position: relative;
+	}
+
+	.quick-pickup-datetime-field :global(ssk-date-picker) {
+		width: 100%;
+		font-size: var(--ssk-font-size-sm);
+		color: var(--ssk-colors-gray-800);
+	}
+
 	.field-label {
 		font-family: var(--ssk-font-family-sans, 'Noto Sans Thai', Roboto, sans-serif);
 		font-size: var(--ssk-font-size-xs);
@@ -1944,19 +2866,9 @@
 		color: var(--ssk-colors-gray-500);
 	}
 
-	/* Basic mode's "เปลี่ยนรายสินค้าได้ที่รายการด้านล่าง" hint — only shown once 2+
-	   categories exist, so the sale-level dropdown still explains itself as "the
-	   default", not "the only choice". */
-	.field-hint {
-		font-family: var(--ssk-font-family-sans, 'Noto Sans Thai', Roboto, sans-serif);
-		font-size: var(--ssk-font-size-xs);
-		line-height: 1.3;
-		color: var(--ssk-colors-gray-400);
-	}
-
-	/* Label plus an inline action beside it, same row — only the customer field needs
-	   this today (the "สร้างคำสั่งซื้อกลุ่ม" entry point), so it is its own class rather
-	   than folded into .field-label itself. */
+	/* Label plus an inline action beside it, same row — e.g. the "เพิ่มตัวเลือกรับสินค้า"
+	   trigger beside "รูปแบบการรับสินค้า", so it is its own class rather than folded into
+	   .field-label itself. */
 	.field-label-row {
 		display: flex;
 		align-items: center;
@@ -1964,15 +2876,8 @@
 		gap: 0.5rem;
 	}
 
-	/* Same shape as .field-label-row, but a separate rule: this one sits directly above
-	   the group cards rather than inside a .field block, so it carries its own bottom
-	   spacing instead of .field's. */
-	.group-order-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
-		padding-bottom: 0.5rem;
+	.pile-adder-wrap {
+		position: relative;
 	}
 
 	.field-control {
@@ -2017,7 +2922,10 @@
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) auto;
 		gap: 0.125rem 0.5rem;
-		padding: 0.5rem 0.625rem 0.625rem;
+		/* 0.75rem horizontal matches .dest-trigger / .field-control's own side padding,
+		   so this card's left/right edges line up with the other field cards in the
+		   same column instead of sitting 2px narrower than its siblings. */
+		padding: 0.5rem 0.75rem 0.75rem;
 		background: #fff;
 		border: 1px solid var(--ssk-colors-gray-200);
 		border-radius: 8px;
@@ -2199,6 +3107,32 @@
 
 	.required {
 		color: var(--ssk-colors-secondary-500);
+	}
+
+	/* Same copy/look as ModalPickupBranch's own .empty — ให้บริการนอกสถานที่'s branch list
+	   is expanded inline here instead of in a separate modal, but a single-branch company
+	   still has nothing else to pick. */
+	.pick-empty {
+		margin: 0;
+		padding: 0.75rem;
+		font-size: var(--ssk-font-size-sm);
+		color: var(--ssk-colors-gray-500);
+		background: var(--ssk-colors-gray-50);
+		border-radius: 10px;
+	}
+
+	/* Same look as DrawerCustomerAddress's own "เพิ่มที่อยู่ใหม่" link, next to the inline
+	   address card list ให้บริการนอกสถานที่'s own "ที่อยู่ลูกค้า" tab reuses here. */
+	.link {
+		padding: 0;
+		border: 0;
+		background: none;
+		font-family: inherit;
+		font-size: var(--ssk-font-size-sm);
+		font-weight: 500;
+		color: var(--ssk-colors-sky-600, #0284c7);
+		text-decoration: underline;
+		cursor: pointer;
 	}
 
 	/* The dropdown half: give the DS field the same height as the customer card. */
