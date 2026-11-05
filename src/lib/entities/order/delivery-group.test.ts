@@ -684,7 +684,7 @@ describe('groupKindLabel wording', () => {
 		expect(groupKindLabel(DeliveryGroupKind.PickupLater)).toBe('รับภายหลัง');
 		expect(groupKindLabel(DeliveryGroupKind.Shipping)).toBe('จัดส่งจากร้าน');
 		expect(groupKindLabel(DeliveryGroupKind.Digital)).toBe('จัดส่งเข้าระบบ (ดิจิทัล)');
-		expect(groupKindLabel(DeliveryGroupKind.OnSite)).toBe('ให้บริการที่สถานที่ลูกค้า');
+		expect(groupKindLabel(DeliveryGroupKind.OnSite)).toBe('ให้บริการ');
 	});
 });
 
@@ -725,10 +725,10 @@ describe('lineFulfilmentOptions', () => {
 		).toEqual([DeliveryGroupKind.Shipping]);
 	});
 
-	it('gives an online physical line exactly one option: Shipping — online is shipping-only, no per-line picker', () => {
+	it('gives an online physical line Shipping or PickupLater — same choice Link Bill already had', () => {
 		expect(
 			lineFulfilmentOptions({ fulfilmentType: ItemFulfilmentType.Physical }, { channel: 'online', marketplace: false })
-		).toEqual([DeliveryGroupKind.Shipping]);
+		).toEqual([DeliveryGroupKind.Shipping, DeliveryGroupKind.PickupLater]);
 	});
 
 	it('gives a link-bill physical line Shipping or PickupLater — no counter to hand it over at', () => {

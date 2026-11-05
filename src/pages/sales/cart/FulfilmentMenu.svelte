@@ -45,7 +45,7 @@
 				<span class="option-hint">{option.hint}</span>
 			</span>
 			{#if option.value === selectedValue}
-				<ssk-icon name="outline-check" size="xs"></ssk-icon>
+				<ssk-icon name="outline-check" size="xs" color="#EC5E2A"></ssk-icon>
 			{/if}
 		</li>
 	{/each}
@@ -54,7 +54,10 @@
 <style>
 	.fulfilment-menu {
 		position: absolute;
-		z-index: 1000;
+		/* Above everything else this panel can float over — the settings drawer's own
+		   backdrop and the fulfilment selector's native ssk-dropdown popup both sit in this
+		   same top area, and this menu must never render underneath either one. */
+		z-index: 1200;
 		margin: 0;
 		padding: 0.25rem;
 		list-style: none;

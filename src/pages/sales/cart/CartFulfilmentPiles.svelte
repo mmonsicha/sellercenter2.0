@@ -162,8 +162,12 @@
 	// Same courier list Cart.svelte's own methodLabel reads from, minus its
 	// marketplace-channel special case — a multi-bucket sale's badges only need the plain
 	// courier name, never "ตามแพลตฟอร์ม (Shopee)"'s own sub-channel detail.
+	// 'unknown' ("ไม่ระบุ") is a real, selectable row in standardDeliveries/sameDayDeliveries
+	// — once the cashier has actually picked it, the badge must say so, same as any real
+	// courier (see isGroupFulfilmentComplete's own comment on this). Only a group nobody
+	// has touched (method still undefined) shows nothing here.
 	function courierLabel(method: string | undefined): string | undefined {
-		if (!method || method === 'unknown') return undefined;
+		if (!method) return undefined;
 		if (method === 'platform') return 'ตามแพลตฟอร์ม';
 		const found = [...standardDeliveries, ...sameDayDeliveries].find((o) => o.value === method);
 		return found?.label.replace(/<br\s*\/?>/gi, ' ') ?? method;
@@ -403,16 +407,11 @@
 	// pile's own gear icon could independently resolve to different groups once 2+
 	// instances of ONE kind existed; gating on the TOTAL bucket count sidesteps that
 	// entirely, since "exactly one bucket" is never ambiguous regardless of kind. An
-	// online sale is Shipping-only (see resolveLineKind/lineFulfilmentOptions — no other
-	// kind is ever legal for it), but CAN still split into several Shipping buckets, one
-	// per "จัดส่งหลายที่อยู่" address — so it badges exactly like POS once that happens,
+	// online sale used to be Shipping-only (see resolveLineKind/lineFulfilmentOptions), but
+	// now gets the same 3-way choice (รับภายหลัง/จัดส่ง/ให้บริการ, PO brief) POS already had
+	// minus รับทันที — so it badges exactly like POS once more than one bucket is in play,
 	// gated by the same plain bucket count, not forced plain regardless of it.
 	$: plainList = buckets.length <= 1;
-
-	// Online has nothing to pick or badge per line (see plainList above) — omitting these
-	// entirely (rather than passing a function that always returns one option) is what
-	// also drops CartItem's own read-only "ดิจิทัล" badge, not just the dropdown.
-	$: showsLinePicker = lineCtx.channel !== 'online';
 
 	// Cross-pile drag target — dropping a line from a DIFFERENT pile here moves it (same
 	// onChangeFulfilment the old per-line dropdown used); dropping within its OWN pile is
@@ -458,11 +457,7 @@
 </script>
 
 {#if plainList}
-	{#if showsLinePicker}
-		<CartItem {items} {fulfilmentOptionsOf} {fulfilmentOf} {onChangeFulfilment} />
-	{:else}
-		<CartItem {items} />
-	{/if}
+	<CartItem {items} {fulfilmentOptionsOf} {fulfilmentOf} {onChangeFulfilment} />
 {:else}
 	{#each buckets as bucket (bucket.key)}
 		<div

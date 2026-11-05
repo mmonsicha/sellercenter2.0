@@ -252,6 +252,12 @@ export const isDestinationReady = (g: DeliveryGroup): boolean => {
 
 // Wording matches the user's own mockup exactly — the mockup is the source of truth,
 // not whatever text existed here before (รับที่ร้าน/รับทีหลัง/จัดส่ง/ดิจิทัล).
+// OnSite's label used to read "ให้บริการที่สถานที่ลูกค้า" (service AT the customer's
+// place) while its own groupKindHint below read "ให้บริการนอกสถานที่ลูกค้า" (service
+// OUTSIDE the customer's place) — two contradictory framings of the same kind, and
+// neither one covered onSiteLocation's other branch ('store': the customer comes in
+// instead of staff travelling out). "ให้บริการ" + a hint naming both locations is the
+// one phrasing that stays true regardless of which onSiteLocation the cashier picks.
 export const groupKindLabel = (kind: DeliveryGroupKind): string => {
 	switch (kind) {
 		case DeliveryGroupKind.Digital:
@@ -261,7 +267,7 @@ export const groupKindLabel = (kind: DeliveryGroupKind): string => {
 		case DeliveryGroupKind.PickupInStore:
 			return 'รับทันที';
 		case DeliveryGroupKind.OnSite:
-			return 'ให้บริการที่สถานที่ลูกค้า';
+			return 'ให้บริการ';
 		case DeliveryGroupKind.Shipping:
 		default:
 			return 'จัดส่งจากร้าน';
@@ -299,7 +305,7 @@ export const groupKindHint = (kind: DeliveryGroupKind): string => {
 		case DeliveryGroupKind.PickupInStore:
 			return 'รับสินค้าไปเลย';
 		case DeliveryGroupKind.OnSite:
-			return 'ให้บริการนอกสถานที่ลูกค้า';
+			return 'เลือกได้ทั้งที่ร้านและนอกสถานที่';
 		case DeliveryGroupKind.Shipping:
 		default:
 			return 'ร้านจัดส่งให้ลูกค้า';
@@ -317,17 +323,21 @@ export const kindNeedsTravelFee = (kind: DeliveryGroupKind): boolean =>
 	kind === DeliveryGroupKind.OnSite;
 
 // Everything a cashier must still fill in before this group can be paid for — a real
-// destination (isDestinationReady) alone isn't enough: Shipping also needs an actual
-// courier (not the 'unknown' sentinel), and PickupLater still needs which branch. A
-// Shipping/OnSite fee left blank is NOT missing information — it's simply ฿0 (see every
-// `shippingFee ?? 0` read elsewhere), so it's never checked here. Kept separate from
-// isDestinationReady itself (whose exact "has a destination" semantics the existing test
-// suite pins) rather than folded into it — this is the broader "ready to pay" question
-// deliverySummary.missing actually needs.
+// destination (isDestinationReady) alone isn't enough: Shipping also needs a courier FIELD
+// answered, and PickupLater still needs which branch. "ไม่ระบุ" (the 'unknown' sentinel) is
+// a real, selectable row in standardDeliveries/sameDayDeliveries/paymentMethods, not a
+// placeholder — once the cashier has actually opened the settings drawer and picked it, that
+// counts as the field being answered, same as picking any real courier would. Only an
+// untouched group (g.method still undefined — syncDeliveryGroups never stamps a default
+// here) is genuinely missing. A Shipping/OnSite fee left blank is NOT missing information
+// either — it's simply ฿0 (see every `shippingFee ?? 0` read elsewhere), so it's never
+// checked here. Kept separate from isDestinationReady itself (whose exact "has a
+// destination" semantics the existing test suite pins) rather than folded into it — this is
+// the broader "ready to pay" question deliverySummary.missing actually needs.
 export const isGroupFulfilmentComplete = (g: DeliveryGroup): boolean => {
 	if (!isDestinationReady(g)) return false;
 	if (g.kind === DeliveryGroupKind.PickupLater) return !!g.pickupStoreId;
-	if (kindNeedsShippingMethod(g.kind)) return !!g.method && g.method !== 'unknown';
+	if (kindNeedsShippingMethod(g.kind)) return !!g.method;
 	return true;
 };
 
@@ -512,7 +522,11 @@ export interface LineFulfilmentCtx {
 // one too (the platform's own logistics). Everything else gets a real menu: an online/
 // link-bill physical line may ship now or be picked up later (no counter — nobody is
 // standing at one), while a POS physical line gets the full three-way choice a cashier
-// actually has in front of them.
+// actually has in front of them. OnSite is deliberately never one of these options for a
+// PHYSICAL line on ANY channel — it exists purely so a service item's own hard-split group
+// (and the sale-level "ให้บริการ" pick that activates its pile/contact card) has somewhere
+// to live; a plain physical line dropped there would be rejected the same way, see
+// CartFulfilmentPiles' own onDropOnPile.
 export function lineFulfilmentOptions(
 	item: { fulfilmentType?: string },
 	ctx: LineFulfilmentCtx
@@ -521,11 +535,11 @@ export function lineFulfilmentOptions(
 	if (kind === ItemFulfilmentType.Digital) return [DeliveryGroupKind.Digital];
 	if (kind === ItemFulfilmentType.Service) return [DeliveryGroupKind.OnSite];
 	if (ctx.marketplace) return [DeliveryGroupKind.Shipping];
-	// An online sale is shipping only now — a physical line has no other legal destination,
-	// so it gets no per-line picker at all (same "one option, no dropdown" treatment as a
-	// digital/service/marketplace line). Link Bill still lets a line go either way.
-	if (ctx.channel === 'online') return [DeliveryGroupKind.Shipping];
-	if (ctx.channel === 'linkbill') {
+	// Online now gets the same "ship now or pick up later" choice Link Bill already had
+	// (PO brief: online's own "รูปแบบการรับสินค้า" dropdown adds รับภายหลัง/ให้บริการ beside
+	// its existing จัดส่ง default) — a physical line still never goes to OnSite itself, only
+	// a service item does, via the early return above.
+	if (ctx.channel === 'online' || ctx.channel === 'linkbill') {
 		return [DeliveryGroupKind.Shipping, DeliveryGroupKind.PickupLater];
 	}
 	return [DeliveryGroupKind.PickupInStore, DeliveryGroupKind.PickupLater, DeliveryGroupKind.Shipping];

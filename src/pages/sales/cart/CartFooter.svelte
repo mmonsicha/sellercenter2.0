@@ -35,7 +35,7 @@
 	import { currentStore } from '$stores/store/current-store';
 	import { formatPriceWithBath } from '$utils/format-number';
 	import type { I18nStore, ToastStore } from '@sellsuki-org/sellsuki-components';
-	import { getContext, tick } from 'svelte';
+	import { getContext } from 'svelte';
 	import { isDiscountValueValid } from './util.cart';
 	import { isDiscountCodeEnabled } from '$lib/feature-flags';
 	import {
@@ -83,6 +83,14 @@
 	// Branch the customer will collect a pick-up-later order at. Empty for every other
 	// fulfilment type, and the order builder then behaves exactly as before.
 	export let pickupStoreId: string = '';
+	// Fired whenever a sale actually ENDS — order created, or the cashier explicitly clears
+	// the cart — so Cart.svelte can put its own channel/fulfilment selection (POS/ออนไลน์/
+	// ลิงก์, รูปแบบการรับสินค้า) back to the system default for the NEXT sale. clearData()
+	// below already resets $orderData's own saleChannel via clearOrderMeta, but that's the
+	// order's backing data, not Cart.svelte's own local `channel`/`fullfilmentType` — nothing
+	// read it back, so a sale finished on, say, ออนไลน์ + digital left the NEXT sale's UI
+	// still showing that instead of starting fresh at POS + รับทันที.
+	export let onSaleReset: () => void = () => {};
 
 	let isProcessing = false;
 	var remark: string = '';
@@ -179,6 +187,10 @@
 		{ tab: 'fixed', label: 'ส่วนลดบาท', icon: 'outline-banknotes' },
 		{ tab: 'coupon', label: 'คูปอง', icon: 'outline-ticket' }
 	];
+	// Coupon only shows up when the feature flag is on — filtered once here so the
+	// template, the keyboard nav below and focusOption's own index all agree on the same
+	// list, instead of each re-deriving (or forgetting to re-derive) the same filter.
+	$: visibleDiscountTabs = DISCOUNT_TABS.filter((t) => t.tab !== 'coupon' || isDiscountCodeEnabled());
 
 	const selectDraftTab = (tab: DiscountTab) => {
 		if (tab === draftTab) return;
@@ -189,17 +201,26 @@
 		if (tab !== 'coupon') draftDType = tab;
 	};
 
-	// Arrow keys move between the 3 tabs, as a tablist is expected to.
-	const onTabKeydown = async (e: KeyboardEvent) => {
-		if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
-		e.preventDefault();
-		const currentIndex = DISCOUNT_TABS.findIndex((t) => t.tab === draftTab);
-		const delta = e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 1;
-		const next = DISCOUNT_TABS[(currentIndex + delta + DISCOUNT_TABS.length) % DISCOUNT_TABS.length];
-		const group = e.currentTarget as HTMLElement;
-		selectDraftTab(next.tab);
-		await tick();
-		group.querySelectorAll<HTMLElement>('.discount-tab')[DISCOUNT_TABS.indexOf(next)]?.focus();
+	// ssk-tab-button renders a plain <div> with no role and no tabindex, so the
+	// roving-tabindex behaviour a tablist needs lives here, same pattern Cart.svelte's own
+	// channel/fulfilment segmented controls use (rovingTarget/focusOption).
+	function rovingDiscountTarget(event: KeyboardEvent, index: number, length: number): number | undefined {
+		if (event.key === 'ArrowRight' || event.key === 'ArrowDown') return (index + 1) % length;
+		if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') return (index - 1 + length) % length;
+		if (event.key === 'Enter' || event.key === ' ') return index;
+		return undefined;
+	}
+
+	const onDiscountTabKeydown = (index: number) => (event: KeyboardEvent) => {
+		const next = rovingDiscountTarget(event, index, visibleDiscountTabs.length);
+		if (next === undefined) return;
+
+		event.preventDefault();
+		const target = visibleDiscountTabs[next]?.tab;
+		if (target) selectDraftTab(target);
+		(event.currentTarget as HTMLElement).parentElement
+			?.querySelectorAll<HTMLElement>('ssk-tab-button')
+			[next]?.focus();
 	};
 
 	// A short, consistent preset list instead of a free-text field — a reason picked from
@@ -436,6 +457,17 @@
 		(sum, i) => sum + (isNaN(i.qty) ? 0 : i.qty),
 		0
 	);
+	// Only ever shown in the COLLAPSED bar, next to the grand-total label — the cashier
+	// gets a quick glance at what's inside without reopening the section, which is the
+	// whole point of being collapsed; the expanded view already itemizes every line below,
+	// so this is deliberately left off the expanded grand-total row to avoid saying it
+	// twice. ส่วนลด only joins in once one is applied (hasDiscount), same gate the
+	// quick-action chip above already uses, so a sale with no discount reads as a plain
+	// "N รายการ" instead of a redundant "ส่วนลด -฿0".
+	$: summaryHeaderText = [
+		`${totalItemCount} รายการ`,
+		...(hasDiscount ? [`ส่วนลด -${formatPriceWithBath(discount)}`] : [])
+	].join(' · ');
 
 	// Keep courier shipping and on-site travel fees on separate rows so each amount has
 	// an unambiguous label in the compact cart summary.
@@ -466,6 +498,7 @@
 		ClearAllItem();
 		$orderData.buyer = newPartyInfo();
 		clearOrderMeta();
+		onSaleReset();
 	}
 
 	function isValidPaymentType(type?: string): boolean {
@@ -745,6 +778,7 @@
 		clearDiscountErrorValue();
 		clearRemarkValue();
 		ClearAllItem();
+		onSaleReset();
 		toastStore.addToast({
 			message: 'นำสินค้าออกสำเร็จ',
 			type: 'success',
@@ -833,31 +867,48 @@
 		     coupon code. Each own tab (not the old 2-way ประเภท toggle beside a code row
 		     underneath) since a coupon isn't a third VALUE for the same field, it's a
 		     different ROUTE to one — picking it swaps the whole panel below, not just a
-		     unit label. -->
-		<div
-			class="discount-tabs"
-			role="tablist"
-			tabindex="-1"
+		     unit label. DS's own ssk-tab-header/ssk-tab-button, same pattern as Cart.svelte's
+		     channel/shipping-method segmented controls, not a bespoke button row. -->
+		<ssk-tab-header
+			class="tabs discount-tabs"
+			variant="button"
+			size="sm"
+			align="center"
+			color="primary"
+			buttonwidth="auto"
+			role="radiogroup"
 			aria-label="วิธีให้ส่วนลด"
-			on:keydown={onTabKeydown}
 		>
-			{#each DISCOUNT_TABS.filter((t) => t.tab !== 'coupon' || isDiscountCodeEnabled()) as t}
-				<button
-					type="button"
-					class="discount-tab"
-					class:active={draftTab === t.tab}
-					role="tab"
-					aria-selected={draftTab === t.tab}
+			{#each visibleDiscountTabs as t, index}
+				<ssk-tab-button
+					active={draftTab === t.tab}
+					variant="button"
+					size="sm"
+					align="center"
+					buttonwidth="auto"
+					width="100%"
+					role="radio"
+					aria-checked={draftTab === t.tab}
 					tabindex={draftTab === t.tab ? 0 : -1}
 					on:click={() => selectDraftTab(t.tab)}
+					on:keydown={onDiscountTabKeydown(index)}
 					data-testid={`sales.cart.discount.tab.${t.tab}`}
 				>
-					<ssk-icon name={t.icon} size="xs"></ssk-icon>
-					{t.label}
-				</button>
+					<div class="tab-text">
+						<ssk-icon name={t.icon} size="xs"></ssk-icon>
+						<span>{t.label}</span>
+					</div>
+				</ssk-tab-button>
 			{/each}
-		</div>
+		</ssk-tab-header>
 
+		<!-- A fixed-height floor around the tab-dependent content — ส่วนลด %/บาท (input +
+		     quick-chips + reason chips) is the tallest of the 3 panels, and คูปอง (just an
+		     input + button, taller only once a message/suggestion list appears) used to
+		     leave the modal visibly shrinking and growing every time the cashier switched
+		     tabs. min-height pins it to the tallest panel's own height instead, so a
+		     shorter panel just leaves blank space rather than resizing the modal. -->
+		<div class="discount-panel">
 		{#if draftTab === 'coupon'}
 			<!-- Coupon panel — its own text field, no stepper/unit (a code isn't a number),
 			     and a sample-code row that doubles as a hint and a shortcut: it starts as
@@ -986,6 +1037,7 @@
 				</div>
 			</div>
 		{/if}
+		</div>
 
 		<!-- The actual math, live — subtotal, what's coming off, what's left — so the
 		     cashier sees the real baht before committing, not just a % in the abstract. -->
@@ -1266,6 +1318,7 @@
 		>
 			<ssk-icon name="outline-chevron-down" size="xs" themeColor="stroke"></ssk-icon>
 		</button>
+
 		<div class="summary-row summary-subtotal">
 			<ssk-text fontSize="24px" color="gray.700" fontWeight="medium">
 				<ssk-i18n-translate
@@ -1351,9 +1404,10 @@
 	</div>
 	{:else}
 	<!-- Collapsed: one compact row carries the number that matters most (grand total)
-	     plus a hint when something is hidden that the cashier would otherwise miss
-	     (an unset shipping fee, or an applied discount) — everything else is a tap
-	     away via the chevron. -->
+	     plus the "· N รายการ · ส่วนลด ..." detail — the cashier gets a quick glance at
+	     the breakdown WITHOUT reopening the section, which is the whole point of this
+	     being the collapsed state. Expanded already shows every line itemized below, so
+	     this suffix only lives here, not duplicated onto the expanded grand-total row too. -->
 	<button
 		type="button"
 		class="summary-collapsed"
@@ -1366,9 +1420,7 @@
 				lang={$currentLanguage.code}
 				fallbackLang="default"
 			/>
-			{#if hasDiscount}
-				<span class="summary-collapsed-discount"> · ส่วนลด -{formatPriceWithBath(discount)}</span>
-			{/if}
+			<span class="summary-collapsed-discount"> · {summaryHeaderText}</span>
 		</span>
 		<span class="summary-collapsed-right">
 			<span class="summary-collapsed-total">{formatPriceWithBath(grandTotal)}</span>
@@ -1771,51 +1823,44 @@
 	/* The 3 ways to reach one discount — a tablist, not a 2-way toggle beside a code
 	   row: picking one swaps the whole panel below (amount field vs. code field), which
 	   reads as "a different section" rather than "a different unit on the same field". */
-	.discount-tabs {
-		display: grid;
-		grid-template-columns: repeat(3, 1fr);
-		gap: 0.25rem;
-		padding: 0.1875rem;
-		box-sizing: border-box;
-		border: 1px solid var(--ssk-colors-gray-200);
-		border-radius: 8px;
-		background: var(--ssk-colors-gray-50);
+	/* ssk-tab-header is a custom element, so it defaults to display: inline — same fix
+	   Cart.svelte's own .tabs rule already carries for its channel/shipping-method tabs. */
+	.tabs {
+		display: block;
+		width: 100%;
 	}
 
-	.discount-tab {
+	.discount-tabs {
+		margin-bottom: 0.625rem;
+	}
+
+	/* Wraps whichever tab's own fields are showing — see the markup comment on why this
+	   carries a min-height. Grid + the same 0.625rem gap .modal-fields itself uses, since
+	   this div now sits between those fields and .modal-fields instead of each being a
+	   direct (and so directly gapped) child of it. */
+	.discount-panel {
+		display: grid;
+		align-content: start;
+		gap: 0.625rem;
+		min-height: 14rem;
+	}
+
+	.tab-text {
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		gap: 0.25rem;
-		min-height: 2rem;
-		padding: 0 0.375rem;
-		/* transparent border on the base so selecting one does not shift the row */
-		border: 1px solid transparent;
-		border-radius: 6px;
-		background: transparent;
-		font-family: inherit;
-		font-size: var(--ssk-font-size-xs);
-		line-height: 1.3;
-		color: var(--ssk-colors-gray-600);
-		cursor: pointer;
+		gap: 0.375rem;
+		padding: 0.3rem;
+	}
+
+	.tab-text span {
 		white-space: nowrap;
 	}
 
-	.discount-tab:hover:not(.active) {
-		background: var(--ssk-colors-gray-100);
-	}
-
-	.discount-tab.active {
-		background: #fff;
-		border-color: var(--ssk-colors-gray-300);
-		color: var(--ssk-colors-primary-500);
-		font-weight: 600;
-		box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
-	}
-
-	.discount-tab:focus-visible {
+	ssk-tab-button:focus-visible {
 		outline: 2px solid var(--ssk-colors-primary-500);
-		outline-offset: 1px;
+		outline-offset: -2px;
+		border-radius: 8px;
 	}
 
 	.code-suggest {
@@ -1980,6 +2025,7 @@
 		outline-offset: 1px;
 	}
 
+
 	/* Collapsed state: the whole breakdown box becomes one tappable row — grand total
 	   plus a hint for anything the breakdown would otherwise have surfaced. */
 	.summary-collapsed {
@@ -2017,6 +2063,9 @@
 		min-width: 0;
 	}
 
+	/* Carries "N รายการ · ส่วนลด ..." now, not only the discount it was named for — kept
+	   neutral gray rather than the old discount-green since an item count alone isn't a
+	   positive/savings fact the way a discount amount is. */
 	.summary-collapsed-discount {
 		color: var(--ssk-colors-success-600, #16a34a);
 		font-weight: 500;

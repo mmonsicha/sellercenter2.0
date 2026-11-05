@@ -50,6 +50,7 @@
 	import DrawerCustomerAddress from './section/DrawerCustomerAddress.svelte';
 	import ModalPickupBranch from './section/ModalPickupBranch.svelte';
 	import ModalAddPileAddress from './section/ModalAddPileAddress.svelte';
+	import InlineContactEdit from './section/InlineContactEdit.svelte';
 	import PickList from './section/PickList.svelte';
 	import PickCard from './section/PickCard.svelte';
 	import { currentCompany } from '$stores/company/current-company';
@@ -104,48 +105,59 @@
 	// Where the customer will collect a pick-up-later order. The company's branches are
 	// already in memory from the company load, so the picker needs no extra request.
 	let pickupStoreId: string = '';
-	// DigitalDelivery only makes sense when every line in the cart is a digital product —
-	// offering it otherwise would promise an email-only sale for items that still need a
+	// DigitalDelivery as the sale's own DEFAULT only makes sense when every line in the cart
+	// is a digital product (see the auto-follow reactive block below) — offering it as the
+	// default otherwise would promise an email-only sale for items that still need a
 	// physical destination. OnSite has no such gate; any POS sale can dispatch staff out.
 	$: isAllDigitalCart =
 		cartList?.length > 0 &&
 		cartList.every((i) => itemFulfilmentOf(i.fulfilmentType) === ItemFulfilmentType.Digital);
-	$: fullfilmentOptions = [
-		FullfilmentType.PickupImmediate,
-		FullfilmentType.PickupLater,
-		FullfilmentType.ShopDelivery,
-		FullfilmentType.OnSite,
-		...(isAllDigitalCart ? [FullfilmentType.DigitalDelivery] : [])
-	];
+	// The LIST itself is unconditional — "จัดส่งเข้าระบบ (ดิจิทัล)" is a row here always,
+	// same as every other kind (none of PickupImmediate/PickupLater/ShopDelivery/OnSite
+	// wait for a matching item before they show up either), not only once a digital item
+	// happens to already be in the cart. Matches "+เพิ่มตัวเลือกรับสินค้า"'s own pileTypeOptions,
+	// which has always listed Digital unconditionally (just disabled once a digital bucket
+	// already exists) — the two dropdowns offer the same set of kinds.
+	//
+	// Online gets this same dropdown now too (PO brief), minus รับทันที (no counter to hand
+	// anything over at for an online sale) and minus จัดส่งเข้าระบบ (ดิจิทัล) (a digital LINE
+	// already force-resolves into its own Digital group regardless of what's picked here —
+	// see resolveLineKind — so online never needed a dedicated row for it, same as it never
+	// got one before this dropdown existed for it at all). ShopDelivery ("จัดส่ง") is still
+	// the list's first non-pickup-later entry, matching online's own pre-existing default.
+	$: fullfilmentOptions = isOnline
+		? [FullfilmentType.PickupLater, FullfilmentType.ShopDelivery, FullfilmentType.OnSite]
+		: [
+				FullfilmentType.PickupImmediate,
+				FullfilmentType.PickupLater,
+				FullfilmentType.ShopDelivery,
+				FullfilmentType.OnSite,
+				FullfilmentType.DigitalDelivery
+			];
 	// The cashier never has to find "จัดส่งเข้าระบบ (ดิจิทัล)" by hand — the moment the cart
-	// goes all-digital (the same isAllDigitalCart gate fullfilmentOptions itself uses), the
-	// sale's own fulfilment type follows automatically, same as every digital LINE already
-	// force-resolves into its own Digital group regardless of what's picked here (see
-	// resolveLineKind). Deliberately skips handleSelectOption's own ResetPhysicalLineFulfilment
-	// — there's no physical line left to reset while this is true, and switching back out
-	// (a physical item added back in) must not wipe any open piles the cashier already set
-	// up for OTHER physical lines sitting beside it. Only POS shows this dropdown at all —
-	// online/ลิงก์ already resolve a digital line into its own group the same way regardless
-	// of fullfilmentType, so this would be a no-op write there anyway, best left undone.
-	$: if (isPos && cartList?.length > 0) {
-		if (isAllDigitalCart && fullfilmentType !== FullfilmentType.DigitalDelivery) {
-			fullfilmentType = FullfilmentType.DigitalDelivery;
-			setSalesChannel({
-				...$orderData.saleChannel,
-				saleOrigin: FullfilmentType.DigitalDelivery,
-				type: SaleChannelType.Offline
-			});
-		} else if (!isAllDigitalCart && fullfilmentType === FullfilmentType.DigitalDelivery) {
-			// No longer all-digital — DigitalDelivery just stopped being a legal choice (see
-			// fullfilmentOptions' own gate), so fall back to the ordinary pickup-now default
-			// rather than leaving a now-invalid type selected.
-			fullfilmentType = FullfilmentType.PickupImmediate;
-			setSalesChannel({
-				...$orderData.saleChannel,
-				saleOrigin: FullfilmentType.PickupImmediate,
-				type: SaleChannelType.Offline
-			});
-		}
+	// goes all-digital, the sale's own fulfilment type follows automatically, same as every
+	// digital LINE already force-resolves into its own Digital group regardless of what's
+	// picked here (see resolveLineKind). Deliberately skips handleSelectOption's own
+	// ResetPhysicalLineFulfilment — there's no physical line left to reset while this is
+	// true, and switching back out (a physical item added back in) must not wipe any open
+	// piles the cashier already set up for OTHER physical lines sitting beside it. Only POS
+	// shows this dropdown at all — online/ลิงก์ already resolve a digital line into its own
+	// group the same way regardless of fullfilmentType, so this would be a no-op write there
+	// anyway, best left undone.
+	//
+	// Used to also auto-revert back to PickupImmediate the instant the cart stopped being
+	// all-digital, on the premise that DigitalDelivery was only ever a legal choice then.
+	// Now that fullfilmentOptions lists it unconditionally (every other kind here is always
+	// selectable too, cart contents or not), a cashier picking it by hand on a mixed cart is
+	// a real choice, not a stale leftover value — auto-reverting it the next tick undid that
+	// choice before it ever painted, so this branch is gone.
+	$: if (isPos && cartList?.length > 0 && isAllDigitalCart && fullfilmentType !== FullfilmentType.DigitalDelivery) {
+		fullfilmentType = FullfilmentType.DigitalDelivery;
+		setSalesChannel({
+			...$orderData.saleChannel,
+			saleOrigin: FullfilmentType.DigitalDelivery,
+			type: SaleChannelType.Offline
+		});
 	}
 	// The channel / fulfilment / customer block collapses to a one-line summary so the
 	// list gets the space back. A view toggle, not a data change: nothing selected is
@@ -183,8 +195,11 @@
 		},
 		[FullfilmentType.OnSite]: {
 			icon: 'outline-wrench-screwdriver',
-			hint: 'ให้บริการนอกสถานที่ลูกค้า',
-			label: 'ให้บริการที่สถานที่ลูกค้า'
+			// "ให้บริการ" + a hint naming both locations — matches groupKindLabel/groupKindHint
+			// in delivery-group.ts, which used to contradict each other (ที่สถานที่ลูกค้า vs
+			// นอกสถานที่ลูกค้า) and neither covered onSiteLocation's 'store' branch.
+			hint: 'เลือกได้ทั้งที่ร้านและนอกสถานที่',
+			label: 'ให้บริการ'
 		},
 		[FullfilmentType.DigitalDelivery]: {
 			icon: 'outline-bolt',
@@ -282,6 +297,19 @@
 		}
 	}
 	$: displayFullfilmentType = singleKind ? fullfilmentTypeForKind(singleKind) : fullfilmentType;
+	// Which rows in "รูปแบบการรับสินค้า"'s own option list already have a bucket in the cart
+	// right now — a multi-fulfilment sale (isMultiFulfilment) can have several categories
+	// live at once, so a plain single aria-selected (one radio-style pick) can't say that;
+	// this is what lets the dropdown show a ✓ on every category actually present, not just
+	// the one `fullfilmentType` itself still points at. displayKinds alone only covers a
+	// kind with an actual GROUP-backed item in it — an open-but-still-empty pile (see
+	// handleSelectOption's own Digital branch, and "เพิ่มตัวเลือกรับสินค้า" for every other
+	// kind) has no group yet, so it would otherwise show no ✓ at all the moment the cashier
+	// opens it, before anything has actually landed inside.
+	$: presentFullfilmentTypes = new Set([
+		...displayKinds.map(fullfilmentTypeForKind),
+		...$openFulfilmentPiles.map((p) => fullfilmentTypeForKind(p.kind as DeliveryGroupKind))
+	]);
 	// Shipping/OnSite both need a destination + a fee, same as their own per-group card
 	// already does inside the drawer — shown even for the ordinary, unsplit sale (today's
 	// showDeliveryDetail/zero-cost path hides ALL delivery UI until a real split or a
@@ -295,7 +323,16 @@
 	// used, its own inline row only shows while Digital is the sale's ONLY bucket; the
 	// moment a second bucket exists for any reason, CartFulfilmentPiles' own Digital badge
 	// (see hasSettings) becomes the one place to manage it instead.
-	$: needsDigitalContact = hasDigital;
+	// hasDigital alone only turns true once a real digital LINE is already in the cart (it
+	// reads actual delivery groups) — but handleSelectOption now opens an empty Digital
+	// pile the instant the cashier picks "จัดส่งเข้าระบบ (ดิจิทัล)" by hand on an EMPTY cart
+	// (see presentKinds' own fallback below), so this also checks displayFullfilmentType —
+	// NOT raw fullfilmentType, which goes stale the moment real, non-digital cart content
+	// resolves to something else and nothing ever resets it back. Reading the raw field
+	// here used to leave this card stuck showing forever: pick Digital, then add an ordinary
+	// physical or service item instead, and "ส่งสินค้าดิจิทัลไปที่" kept appearing underneath
+	// a cart that had moved on to something else entirely.
+	$: needsDigitalContact = hasDigital || (isPos && displayFullfilmentType === FullfilmentType.DigitalDelivery);
 	// The one-and-only group a plain, unsplit sale already has (syncDeliveryGroups' own
 	// "default group" step) — reused here instead of duplicating its address/fee fields.
 	$: singleDeliveryGroup = liveGroups[0];
@@ -349,22 +386,39 @@
 	// multi-parcel's own rule (an item needs an email/address to send itself to), so they
 	// drop out with the flag — a production cashier must not be gated on a requirement
 	// nothing on screen explains.
+	// displayFullfilmentType, not the raw fullfilmentType — once real cart content resolves
+	// to its own single kind (singleKind), THAT is what's actually true now, same as the
+	// dropdown's own trigger label already shows. Reading raw fullfilmentType here let it
+	// go stale: pick "จัดส่งเข้าระบบ (ดิจิทัล)" on an empty cart, then add only plain physical
+	// pickup-now items (no split, so nothing ever resets fullfilmentType itself) — the sale
+	// kept demanding a customer forever after, for what had become an ordinary walk-in sale.
 	$: customerRequired =
 		!isPos ||
 		(isMultiParcelEnabled() && (hasShip || hasOnSite || hasPickupLater || hasDigital)) ||
-		fullfilmentType !== FullfilmentType.PickupImmediate;
+		displayFullfilmentType !== FullfilmentType.PickupImmediate;
 	$: customerContact =
 		[maskPhoneMiddle(buyer?.phone), buyer?.email].filter(Boolean).join(' · ') || 'ผูกลูกค้าแล้ว';
 	$: customerTooltip = buyer?.name
 		? [buyer.name, buyer.phone, buyer.email].filter(Boolean).join(' · ')
 		: 'เลือกลูกค้า';
 
+	// Computed standalone (not read off deliveryCtx.marketplace below) so isDelivery can use
+	// it without a circular dependency — deliveryCtx itself depends on isDelivery.
+	$: isMarketplaceOnline = isOnline && isMarketplaceChannel(subChannel);
 	// Delivery groups mirror the cart + fulfilment + buyer on every change, so the S2
 	// row and the drawer always reflect the current split (see delivery-group.ts). A
 	// shop sale that never becomes a delivery (pickup, POS pickup-later) keeps isDelivery
 	// false, which is what makes syncDeliveryGroups leave the group list empty and the
 	// row below not render at all — the 80-90% case pays for none of this.
-	$: isDelivery = (isPos && fullfilmentType === FullfilmentType.ShopDelivery) || isOnline;
+	// Online used to be isDelivery UNCONDITIONALLY — every online physical line only ever
+	// had one legal destination (Shipping, see lineFulfilmentOptions). Now that online gets
+	// its own "รูปแบบการรับสินค้า" dropdown (รับภายหลัง/จัดส่ง/ให้บริการ, PO brief), it follows
+	// fullfilmentType the same way POS already does — EXCEPT a marketplace sub-channel
+	// (Shopee/Lazada/...) still forces Shipping regardless, since those physical lines have
+	// no other legal destination either way (lineFulfilmentOptions' own marketplace branch).
+	$: isDelivery =
+		(isPos && fullfilmentType === FullfilmentType.ShopDelivery) ||
+		(isOnline && (isMarketplaceOnline || fullfilmentType === FullfilmentType.ShopDelivery));
 	// "รับบางส่วน" (Option B) only ever applies to a POS จัดส่งให้ลูกค้า sale — no fourth
 	// FullfilmentType is added for it. order-flow.ts already maps ShopDelivery to the
 	// deliver-from-store flow, which is the correct order-level flow for a sale that part-
@@ -392,7 +446,7 @@
 		// Basic mode fields — see LineFulfilmentCtx / syncBasicGroups.
 		channel: (isOnline ? 'online' : isLinkBill ? 'linkbill' : 'pos') as 'pos' | 'online' | 'linkbill',
 		subChannel,
-		marketplace: isOnline && isMarketplaceChannel(subChannel),
+		marketplace: isMarketplaceOnline,
 		recipientPhone: buyer?.phone,
 		pickupStoreId,
 		// "เพิ่มตัวเลือกรับสินค้า" Shipping piles (addressGroupSeq 2+) — their own
@@ -418,10 +472,31 @@
 		get(deliveryGroups);
 	$: liveGroups = freshGroups(syncTick, $deliveryGroups);
 
-	// [] (zero-cost walk-in) reads as "only the sale default", same as syncBasicGroups.
+	// [] (zero-cost walk-in) reads as "only the sale default", same as syncBasicGroups — but
+	// that ALSO covers an ordinary cart that already has real, unsplit PHYSICAL items in it
+	// (a plain pickup-now sale never builds groups at all, see syncDeliveryGroups), not just
+	// a genuinely empty one. physicalKindFor is deliberately "non-digital" (see its own doc
+	// comment) — it only ever needs to resolve a PHYSICAL line's default bucket, since a
+	// digital line never consults it at all (resolveLineKind returns Digital immediately, no
+	// fallback asked). But this particular fallback is for DISPLAY — it's what the dropdown
+	// trigger label, singleKind etc. fall back to before any real group exists — and a
+	// cashier who just picked "จัดส่งเข้าระบบ (ดิจิทัล)" by hand on a genuinely EMPTY cart (see
+	// handleSelectOption's own open-Digital-pile branch) expects the trigger to keep showing
+	// Digital, not silently relabel itself "รับทันที" the instant physicalKindFor's
+	// non-digital contract kicks in. The `cartList?.length === 0` guard is what keeps this
+	// scoped to that one case: add 2 plain physical items to a cart still carrying a stale
+	// fullfilmentType='digitalDelivery' (nothing else in the cart ever resets it back) and
+	// this must resolve to PickupInStore like any other walk-in sale, not keep claiming
+	// Digital for a cart that plainly isn't any more. Checked first, ahead of physicalKindFor,
+	// so this one display fallback alone knows about Digital without loosening
+	// physicalKindFor's own real contract.
 	$: presentKinds = liveGroups.length > 0
 		? Array.from(new Set(liveGroups.map((g) => g.kind)))
-		: [physicalKindFor(fullfilmentType, isDelivery)];
+		: [
+				isPos && cartList?.length === 0 && fullfilmentType === FullfilmentType.DigitalDelivery
+					? DeliveryGroupKind.Digital
+					: physicalKindFor(fullfilmentType, isDelivery)
+			];
 	let editingKind: DeliveryGroupKind | undefined;
 	// รับภายหลัง only — which branch's own pile is open in the settings drawer, so the
 	// drawer, pickupLaterGroupFor and onSelectPickupBranch all stay scoped to the same one
@@ -570,6 +645,12 @@
 	// inline cards, all of which only ever have the sale's own default pile) is unaffected —
 	// only a "เพิ่มตัวเลือกรับสินค้า" pile's own settings button passes a specific one.
 	function openEditingKind(kind: DeliveryGroupKind, pickupStoreId?: string, addressId?: string) {
+		// A still-open "เพิ่มตัวเลือกรับสินค้า" menu floats right above this same field block —
+		// left open, its own absolute-positioned list renders over whatever opens next (the
+		// settings drawer below, or the pile list beneath it), stacking two unrelated floating
+		// panels on screen at once. Every surface that can open from here closes it first so
+		// at most one floating panel is ever showing.
+		showPileMenu = false;
 		if (kind === DeliveryGroupKind.Shipping) {
 			editingAddressId = addressId;
 			const group = shippingGroupFor(addressId);
@@ -671,14 +752,21 @@
 	$: hasPickupLater = presentKinds.includes(DeliveryGroupKind.PickupLater);
 	$: hasPickupInStore = presentKinds.includes(DeliveryGroupKind.PickupInStore);
 	$: hasDigital = presentKinds.includes(DeliveryGroupKind.Digital);
-	// Online is Shipping-only (resolveLineKind never resolves an online line to anything
-	// else), but switching channel deliberately preserves $openFulfilmentPiles/
-	// $activeFulfilmentPile across tabs (see onSelectChannel's own comment) — so a POS
-	// รับภายหลัง/ให้บริการนอกสถานที่ pile left open before switching to ออนไลน์ must never
-	// resurface here just because CartFulfilmentPiles is handed the same raw stores.
-	$: onlineOpenPiles = $openFulfilmentPiles.filter((p) => p.kind === DeliveryGroupKind.Shipping);
+	// Online now legally opens the same 3 piles POS does minus รับทันที (รับภายหลัง/จัดส่ง/
+	// ให้บริการ — PO brief), not Shipping-only any more — but switching channel deliberately
+	// preserves $openFulfilmentPiles/$activeFulfilmentPile across tabs (see onSelectChannel's
+	// own comment), so a POS รับทันที/digital pile left open before switching to ออนไลน์ must
+	// never resurface here just because CartFulfilmentPiles is handed the same raw stores.
+	// Same exclusion pileTypeOptions' own online filter uses, for the same reason.
+	$: onlineOpenPiles = $openFulfilmentPiles.filter(
+		(p) => p.kind !== DeliveryGroupKind.PickupInStore && p.kind !== DeliveryGroupKind.Digital
+	);
 	$: onlineActivePile =
-		$activeFulfilmentPile?.kind === DeliveryGroupKind.Shipping ? $activeFulfilmentPile : undefined;
+		$activeFulfilmentPile &&
+		$activeFulfilmentPile.kind !== DeliveryGroupKind.PickupInStore &&
+		$activeFulfilmentPile.kind !== DeliveryGroupKind.Digital
+			? $activeFulfilmentPile
+			: undefined;
 	// True the moment 2+ Shipping piles exist, regardless of channel — POS's own
 	// "เพิ่มตัวเลือกรับสินค้า" → "จัดส่งจากหน้าร้าน" reaches this exactly the same way online's
 	// "จัดส่งหลายที่อยู่" button does (same shippingBucketCount, same openAddShippingPile).
@@ -757,10 +845,15 @@
 			: onSiteGroup?.onSiteLocation === 'customer'
 				? !!buyer?.address
 				: false;
+	// "ไม่ระบุ" is a real row in standardDeliveries/sameDayDeliveries (value 'unknown'), not
+	// a placeholder — once the cashier has opened ข้อมูลการจัดส่ง and picked it, the field is
+	// answered same as any real courier would be. Only a group nobody has touched yet
+	// (shippingGroup?.method still undefined) counts as missing — matches
+	// isGroupFulfilmentComplete's own rule for the multi-bucket case.
 	$: footerIsBuyerValid =
 		hasShip || hasOnSite
 			? !!buyer?.name &&
-				(!hasShip || (!!buyer?.address && !!shippingGroup?.method && shippingGroup.method !== 'unknown')) &&
+				(!hasShip || (!!buyer?.address && !!shippingGroup?.method)) &&
 				(!hasOnSite || onSiteReady)
 			: customerRequired
 				? !!buyer?.name
@@ -769,8 +862,7 @@
 	// Single-bucket required-field flags — drive the red asterisk + error-styled trigger on
 	// ข้อมูลการจัดส่ง/ข้อมูลการจัดส่ง(OnSite) below, the visual half of the same gate
 	// footerIsBuyerValid enforces.
-	$: shipInfoMissing =
-		hasShip && (!shippingGroup?.method || shippingGroup.method === 'unknown');
+	$: shipInfoMissing = hasShip && !shippingGroup?.method;
 	$: onSiteInfoMissing = hasOnSite && !onSiteReady;
 	$: footerPickupStoreId = hasPickupLater ? pickupStoreId : '';
 
@@ -829,6 +921,9 @@
 	// also switch tab and wipe the draft order, because the dropdown sat inside the
 	// offline tab button and every option click bubbled into the tab's handler.
 	const handleSelectOption = (option: string) => {
+		// Same reasoning as openEditingKind — this field's own "เพิ่มตัวเลือกรับสินค้า" menu
+		// floats right beside it, so picking from THIS dropdown must close that one too.
+		showPileMenu = false;
 		fullfilmentType = option;
 		// saleOrigin carries the fulfilment type for offline sales and the sales
 		// channel (line/facebook/…) for online ones, so pin the type when writing a
@@ -843,6 +938,24 @@
 		// จัดส่ง") must follow the new default too, same as switching ShopDelivery back to
 		// PickupImmediate already resets the old receiveMode-based override.
 		ResetPhysicalLineFulfilment();
+		// Digital is the one kind here with nothing of its own to show until a bucket
+		// actually exists — PickupImmediate/PickupLater/ShopDelivery/OnSite all have an
+		// inline settings row or a pile section the moment they're the sale's kind, but an
+		// empty cart (or one with no digital item yet) has no Digital group for the cart to
+		// render at all (syncDeliveryGroups only ever builds one FROM an actual digital
+		// line). Picking this row is the cashier declaring "this sale is for a digital
+		// product" ahead of adding one, so open the same empty, droppable Digital pile
+		// "เพิ่มตัวเลือกรับสินค้า" would — same call onSelectPileType's own Digital branch
+		// makes — so the cart reads as ready for one immediately, not just once a digital
+		// product happens to land in it.
+		if (
+			option === FullfilmentType.DigitalDelivery &&
+			!presentKinds.includes(DeliveryGroupKind.Digital) &&
+			!hasOpenPile(DeliveryGroupKind.Digital)
+		) {
+			addOpenFulfilmentPile({ kind: DeliveryGroupKind.Digital });
+			setActiveFulfilmentPile({ kind: DeliveryGroupKind.Digital });
+		}
 	};
 
 	// Switching channel changes which customer flow applies, so the draft order is
@@ -858,7 +971,12 @@
 		// preserved group's recipientName/recipientAddress may now point at a buyer that
 		// no longer exists on the sale — not fixed here, out of scope.
 		initializeOrderState(true);
-		fullfilmentType = FullfilmentType.PickupImmediate;
+		// Online's own default is "จัดส่ง" (ShopDelivery) — it never had a รับทันที option to
+		// begin with (no counter to hand anything over at for an online sale), so falling
+		// back to PickupImmediate here would pick a row that isn't even in online's own
+		// fullfilmentOptions list.
+		fullfilmentType =
+			next === SaleChannelUI.Online ? FullfilmentType.ShopDelivery : FullfilmentType.PickupImmediate;
 		subChannel = next === SaleChannelUI.Online ? DEFAULT_SUB_CHANNEL : '';
 		setSalesChannel({
 			...$orderData.saleChannel,
@@ -866,6 +984,18 @@
 			type: saleChannelToPayload(next)
 		});
 	};
+
+	// A sale actually ENDING (order created, or the cashier hits "ล้างตะกร้า") — not just a
+	// cart that happens to pass through zero items while mid-edit — is what resets the
+	// system back to its own default for the NEXT sale: POS + รับทันที. clearOrderMeta
+	// (called by CartFooter's own clearData) already resets $orderData.saleChannel itself;
+	// this is the other half, for Cart.svelte's own local channel/fullfilmentType/subChannel
+	// that nothing else was reading that reset back into.
+	function resetSaleDefaults() {
+		channel = SaleChannelUI.Pos;
+		fullfilmentType = FullfilmentType.PickupImmediate;
+		subChannel = '';
+	}
 
 	// saleOrigin carries the sub-channel for an online sale — the same field the online
 	// drawer writes, so both controls stay in agreement.
@@ -926,13 +1056,25 @@
 	});
 
 	function toggleDrawerCustomer() {
+		showPileMenu = false;
 		showDrawerCustomer = !showDrawerCustomer;
 	}
 
 	// Both panel rows lead to the same drawer; the row only says which half was asked for.
 	function openCustomerDrawer(half: 'customer' | 'address') {
+		showPileMenu = false;
 		customerDrawerOpenOn = half;
 		showDrawerCustomer = true;
+	}
+
+	// InlineContactEdit's own onSaved — the backend write already happened there (Customer
+	// Book v2); this just keeps the order's local `buyer` (PartyInfo) copy in step with it.
+	// A named function, not an inline arrow capturing `buyer` directly: TS doesn't narrow a
+	// closure's capture of an outer `let` by the template's surrounding {#if buyer?.refId},
+	// only a real guard inside the function body itself does.
+	function saveBuyerEmail(email: string) {
+		if (!buyer) return;
+		buyer = { ...buyer, email };
 	}
 
 	const onClickSelectCustomer = async (c: Customer) => {
@@ -977,7 +1119,11 @@
 	// enforced where a line's legal kinds are decided at all (lineFulfilmentOptions), the
 	// same place the old per-line dropdown read it from.
 	$: hasOpenPile = (kind: DeliveryGroupKind) => $openFulfilmentPiles.some((p) => p.kind === kind);
-	$: pileTypeOptions = [
+	// Online only offers 3 of these (PO brief): no rับทันที (no counter to hand anything
+	// over at online) and no digital pile (a digital line already gets its own group
+	// automatically regardless of what's opened here, same reasoning fullfilmentOptions'
+	// own online gate above uses).
+	$: pileTypeOptionsAll = [
 		{
 			kind: DeliveryGroupKind.PickupInStore,
 			label: 'รับทันที',
@@ -1008,7 +1154,10 @@
 		},
 		{
 			kind: DeliveryGroupKind.OnSite,
-			label: 'ให้บริการนอกสถานที่',
+			// Same "ให้บริการ" wording as fullfilmentMeta/groupKindLabel — this hint still names
+			// the add-pile eligibility rule (service-type items only), not the location choice,
+			// so it stays separate from groupKindHint's own "เลือกได้ทั้งที่ร้านและนอกสถานที่".
+			label: 'ให้บริการ',
 			hint: 'เฉพาะสินค้าประเภทบริการ',
 			icon: 'outline-wrench-screwdriver',
 			disabled: presentKinds.includes(DeliveryGroupKind.OnSite) || hasOpenPile(DeliveryGroupKind.OnSite)
@@ -1024,6 +1173,11 @@
 			disabled: presentKinds.includes(DeliveryGroupKind.Digital) || hasOpenPile(DeliveryGroupKind.Digital)
 		}
 	];
+	$: pileTypeOptions = isOnline
+		? pileTypeOptionsAll.filter(
+				({ kind }) => kind !== DeliveryGroupKind.PickupInStore && kind !== DeliveryGroupKind.Digital
+			)
+		: pileTypeOptionsAll;
 	$: pileMenuOptions = pileTypeOptions.map((option) => ({ ...option, value: option.kind }));
 
 	// Every branch a รับภายหลัง pile already open is using — a new one must pick a
@@ -1067,6 +1221,7 @@
 	let showPileAddressModal = false;
 
 	function openAddShippingPile() {
+		showPileMenu = false;
 		pileAddressPickerTarget = undefined;
 		if (shippingAddressOptions.length === 0) {
 			toastStore.addToast({
@@ -1787,6 +1942,8 @@
 	addresses={shippingAddressOptions}
 	onSelect={onSelectPileAddress}
 	close={() => (showPileAddressModal = false)}
+	{buyer}
+	onAddressCreated={setAddress}
 />
 
 <!-- Collapsed, the sale's context and the list's own header are two thin rows and
@@ -1824,13 +1981,17 @@
 							     has no such single field, so this names its three instead — the
 							     sub-channel, how it's paid, and the courier actually picked in
 							     "วิธีการจัดส่ง" (methodLabel already renders the 'platform' sentinel
-							     as "ตามแพลตฟอร์ม (...)" for a marketplace sub-channel). Once
-							     "จัดส่งหลายที่อยู่" is in play, that third slot can no longer name one
-							     courier — each pile has its own — so it names the fact itself instead. -->
+							     as "ตามแพลตฟอร์ม (...)" for a marketplace sub-channel). ช่องทางการขาย
+							     and วิธีการชำระ stay exactly as before; only this third slot changed —
+							     now that online can mix รับภายหลัง/จัดส่ง/ให้บริการ (not just several
+							     Shipping addresses), "จัดส่งหลายที่อยู่" no longer says what's actually
+							     going on once a different KIND is also in play, so it's replaced with
+							     the same "หลายรูปแบบ (N หมวด)" wording the POS dropdown trigger already
+							     uses for this exact situation (isMultiFulfilment/displayKinds.length). -->
 							{subChannelOption?.label ?? 'ไม่ระบุ'} ·
 							{getLabelFromValue($orderData.paymentType, 'paymentMethods')} ·
-							{hasMultiAddressShipping
-								? 'จัดส่งหลายที่อยู่'
+							{isMultiFulfilment
+								? `หลายรูปแบบ (${displayKinds.length} หมวด)`
 								: singleDeliveryGroup?.method
 									? methodLabel(singleDeliveryGroup.method)
 									: 'ยังไม่เลือกขนส่ง'}
@@ -1934,10 +2095,15 @@
 						{/each}
 					</ssk-dropdown>
 				</div>
-			{:else if isPos}
+			{/if}
+			{#if isPos || (isOnline && !isMarketplaceOnline)}
 				<!-- This dropdown is the DEFAULT every physical line not re-picked by the
 				     cashier follows (see handleSelectOption's ResetPhysicalLineFulfilment), even
-				     with several categories present at once via "เพิ่มตัวเลือกรับสินค้า". -->
+				     with several categories present at once via "เพิ่มตัวเลือกรับสินค้า". Online
+				     gets this same field now too (PO brief) — shown right under ช่องทางการขาย
+				     above, minus รับทันที, with a marketplace sub-channel (Shopee/Lazada/...)
+				     excluded entirely since those physical lines have no other legal destination
+				     than the platform's own Shipping anyway (see lineFulfilmentOptions). -->
 				<div class="field">
 					<span class="field-label-row">
 						<span class="field-label">
@@ -1986,6 +2152,7 @@
 						value={fullfilmentType}
 						aria-label="รูปแบบการรับสินค้า"
 						data-testid="sales.fulfilment.select"
+						on:click={() => (showPileMenu = false)}
 					>
 						<ssk-dropdown-button slot="selected" value={fullfilmentType}>
 							{#if isMultiFulfilment}
@@ -2016,9 +2183,17 @@
 							{/if}
 						</ssk-dropdown-button>
 						{#each fullfilmentOptions as opt}
+							<!-- Folds "this IS the sale's current default" into the exact same signal as
+							     "this already has a bucket in the cart" — ssk-dropdown-option's own
+							     native selected style (triggered by `value` matching the parent
+							     ssk-dropdown's `value`) used to paint ITS OWN checkmark on whichever row
+							     equalled fullfilmentType, in a different colour than our ✓ on every
+							     OTHER present row — two indicators doing the same job, disagreeing with
+							     each other. `value` is dropped below so only our one ✓ ever renders,
+							     and it now covers both cases so nothing silently loses its tick. -->
+							{@const isPresent = presentFullfilmentTypes.has(opt) || opt === fullfilmentType}
 							<ssk-dropdown-option
-								value={opt}
-								aria-selected={opt === fullfilmentType}
+								aria-selected={isPresent}
 								on:click={() => handleSelectOption(opt)}
 								data-testid={`sales.fulfilment.option.${opt}`}
 							>
@@ -2039,6 +2214,19 @@
 										</span>
 										<span class="selector-hint">{fullfilmentMeta[opt]?.hint ?? ''}</span>
 									</span>
+									{#if isPresent}
+										<!-- Already has a bucket in the cart — a multi-fulfilment sale can have
+										     several of these at once, so this is a plain ✓ per present
+										     category, not a single radio-style highlight. -->
+										<ssk-icon
+											class="option-present-check"
+											name="outline-check"
+											size="xs"
+											color="#EC5E2A"
+											aria-label="มีอยู่ในตะกร้าแล้ว"
+											data-testid={`sales.fulfilment.option.${opt}.present`}
+										></ssk-icon>
+									{/if}
 								</span>
 							</ssk-dropdown-option>
 						{/each}
@@ -2051,12 +2239,16 @@
 					<span class="field-label">
 						ลูกค้า{#if customerRequired}<span class="required">*</span>{/if}
 					</span>
-					<!-- Online's own "เพิ่มตัวเลือกรับสินค้า" equivalent — there's only ever one
-					     legal kind to add (Shipping, see lineFulfilmentOptions), so this skips
-					     straight to openAddShippingPile's own address-picker modal instead of
-					     POS's kind-choosing menu. Marketplace channels (Shopee/Lazada/...) have
-					     no customer address book of their own to pick a second address from. -->
-					{#if isOnline && !deliveryCtx.marketplace && buyer?.name}
+					<!-- Online's own standalone "+ที่อยู่" shortcut — now restricted to marketplace
+					     sub-channels only (Shopee/Lazada/...), which never show the new
+					     "เพิ่มตัวเลือกรับสินค้า" menu above (see its own `!isMarketplaceOnline`
+					     gate) since those physical lines have no other legal destination to offer
+					     a choice between (lineFulfilmentOptions' marketplace branch). An ordinary
+					     online sale now opens its second Shipping address through that same unified
+					     menu instead (its own "จัดส่งจากหน้าร้าน" pile reuses this very
+					     openAddShippingPile function) — keeping this standalone button for it too
+					     would just be two controls doing the same job side by side. -->
+					{#if isOnline && deliveryCtx.marketplace && buyer?.name}
 						<ssk-button
 							size="sm"
 							variant="ghost"
@@ -2222,14 +2414,11 @@
 						data-testid="sales.deliveryinfo.method.open"
 					>
 						<ssk-icon name="outline-truck" size="sm" themeColor="primary"></ssk-icon>
-						<span
-							class="dest-trigger-value"
-							class:placeholder={!shippingGroup?.method || shippingGroup.method === 'unknown'}
-						>
+						<span class="dest-trigger-value" class:placeholder={!shippingGroup?.method}>
 							{#if isOnline}
 								{getLabelFromValue($orderData.paymentType, 'paymentMethods')} ·
 							{/if}
-							{#if shippingGroup?.method && shippingGroup.method !== 'unknown'}
+							{#if shippingGroup?.method}
 								{methodLabel(shippingGroup.method)} · {formatPriceWithBath(
 									shippingGroup.shippingFee ?? 0
 								)}
@@ -2295,23 +2484,44 @@
 			{#if needsDigitalContact && isSingleBucket}
 				<div class="field">
 					<span class="field-label">ส่งสินค้าดิจิทัลไปที่</span>
-					<button
-						type="button"
-						class="dest-trigger"
-						class:empty={!buyer?.email && !buyer?.phone}
-						on:click={() => openCustomerDrawer('customer')}
-						data-testid="sales.deliveryinfo.digital.open"
-					>
-						<ssk-icon
-							name={buyer?.email || buyer?.phone ? 'outline-bolt' : 'outline-exclamation-triangle'}
-							size="sm"
-							themeColor={buyer?.email || buyer?.phone ? 'primary' : 'error'}
-						></ssk-icon>
-						<span class="dest-trigger-value">
-							{buyer?.email || maskPhoneMiddle(buyer?.phone) || 'ยังไม่มีอีเมลหรือเบอร์โทร — เพิ่มลูกค้า'}
-						</span>
-						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
-					</button>
+					{#if buyer?.refId}
+						<!-- Edits JUST the email, right here — before this, fixing a typo'd email
+						     meant opening DrawerCustomerAddress's whole "ลูกค้าและที่อยู่จัดส่ง"
+						     drawer to change one field. A phone fallback still displays (ชื่อ +
+						     เบอร์ are gathered at the customer-select step), but email is the one
+						     digital delivery actually needs and the one this field lets a cashier
+						     fix without leaving the cart. -->
+						<div class="dest-trigger" class:empty={!buyer?.email && !buyer?.phone}>
+							<ssk-icon
+								name={buyer?.email || buyer?.phone ? 'outline-bolt' : 'outline-exclamation-triangle'}
+								size="sm"
+								themeColor={buyer?.email || buyer?.phone ? 'primary' : 'error'}
+							></ssk-icon>
+							<InlineContactEdit
+								kind="email"
+								value={buyer?.email}
+								refId={buyer?.refId}
+								placeholder={buyer?.phone
+									? `หรือใช้เบอร์ ${maskPhoneMiddle(buyer.phone)}`
+									: 'ยังไม่มีอีเมล — เพิ่มที่นี่'}
+								onSaved={saveBuyerEmail}
+								testIdPrefix="sales.deliveryinfo.digital"
+							/>
+						</div>
+					{:else}
+						<!-- No customer picked yet — nothing to save an email onto, so this still
+						     has to go through the drawer to pick one first. -->
+						<button
+							type="button"
+							class="dest-trigger empty"
+							on:click={() => openCustomerDrawer('customer')}
+							data-testid="sales.deliveryinfo.digital.open"
+						>
+							<ssk-icon name="outline-exclamation-triangle" size="sm" themeColor="error"></ssk-icon>
+							<span class="dest-trigger-value">ยังไม่มีอีเมลหรือเบอร์โทร — เพิ่มลูกค้า</span>
+							<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
+						</button>
+					{/if}
 				</div>
 			{/if}
 
@@ -2399,6 +2609,7 @@
 	{isOnline}
 	{isLinkBill}
 	pickupStoreId={footerPickupStoreId}
+	onSaleReset={resetSaleDefaults}
 />
 
 <style>
@@ -3054,6 +3265,9 @@
 		display: grid;
 		row-gap: 0.125rem;
 		min-width: 0;
+		/* Lets .option-body's own trailing "present in cart" ✓ sit flush right instead of
+		   right after the hint text — same flex-row/flex-child split the pile badges use. */
+		flex: 1;
 	}
 
 	.selector-title,
@@ -3094,9 +3308,31 @@
 		align-items: center;
 		gap: 0.5rem;
 		min-width: 0;
+		width: 100%;
+		/* Room for .option-present-check's own absolute right:0 so it never sits on top of
+		   the hint text. */
+		padding-right: 1.5rem;
 		/* 28px of content + the DS's own 9px of padding = a 37px row: a comfortable
 		   target, and the list reads as separate choices instead of one block. */
 		min-height: 1.75rem;
+	}
+
+	/* flex's own margin-left:auto only pushes as far as .option-body's OWN box — and
+	   ssk-dropdown-option's slot wrapper shrink-wraps that box to its content width rather
+	   than stretching it to the full row, so the ✓ still landed right after the hint text
+	   instead of at the row's actual right edge. Pinned via :global(ssk-dropdown-option)
+	   below instead — that custom element IS the full-width row (its own hover/selected
+	   background already spans edge to edge), so anchoring to IT reaches the true right
+	   edge regardless of how its internal slot sizes our markup. */
+	:global(ssk-dropdown-option) {
+		position: relative;
+	}
+
+	.option-present-check {
+		position: absolute;
+		top: 50%;
+		right: 0.75rem;
+		transform: translateY(-50%);
 	}
 
 	/* A little air between rows as well, so the eye can separate them at a glance. */
