@@ -45,6 +45,7 @@
   },
   "dependencies": {
     "@sellsuki-org/sellsuki-components": "^0.27.0-beta.1",
+    "@zxing/browser": "^0.2.1",
     "dexie": "^4.0.1-beta.7",
     "lodash": "^4.17.21",
     "openapi-typescript": "^5.4.1",

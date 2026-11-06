@@ -120,13 +120,15 @@
 	// already exists) — the two dropdowns offer the same set of kinds.
 	//
 	// Online gets this same dropdown now too (PO brief), minus รับทันที (no counter to hand
-	// anything over at for an online sale) and minus จัดส่งเข้าระบบ (ดิจิทัล) (a digital LINE
-	// already force-resolves into its own Digital group regardless of what's picked here —
-	// see resolveLineKind — so online never needed a dedicated row for it, same as it never
-	// got one before this dropdown existed for it at all). ShopDelivery ("จัดส่ง") is still
-	// the list's first non-pickup-later entry, matching online's own pre-existing default.
+	// anything over at for an online sale). ShopDelivery ("จัดส่ง") is still the list's
+	// first non-pickup-later entry, matching online's own pre-existing default.
 	$: fullfilmentOptions = isOnline
-		? [FullfilmentType.PickupLater, FullfilmentType.ShopDelivery, FullfilmentType.OnSite]
+		? [
+				FullfilmentType.PickupLater,
+				FullfilmentType.ShopDelivery,
+				FullfilmentType.OnSite,
+				FullfilmentType.DigitalDelivery
+			]
 		: [
 				FullfilmentType.PickupImmediate,
 				FullfilmentType.PickupLater,
@@ -1174,9 +1176,7 @@
 		}
 	];
 	$: pileTypeOptions = isOnline
-		? pileTypeOptionsAll.filter(
-				({ kind }) => kind !== DeliveryGroupKind.PickupInStore && kind !== DeliveryGroupKind.Digital
-			)
+		? pileTypeOptionsAll.filter(({ kind }) => kind !== DeliveryGroupKind.PickupInStore)
 		: pileTypeOptionsAll;
 	$: pileMenuOptions = pileTypeOptions.map((option) => ({ ...option, value: option.kind }));
 

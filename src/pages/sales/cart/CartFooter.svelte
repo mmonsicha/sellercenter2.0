@@ -35,16 +35,19 @@
 	import { currentStore } from '$stores/store/current-store';
 	import { formatPriceWithBath } from '$utils/format-number';
 	import type { I18nStore, ToastStore } from '@sellsuki-org/sellsuki-components';
-	import { getContext } from 'svelte';
+	import { getContext, tick } from 'svelte';
 	import { isDiscountValueValid } from './util.cart';
 	import { isDiscountCodeEnabled } from '$lib/feature-flags';
 	import {
 		discountCodeMessage,
+		listAvailableDiscountCodes,
 		lookupDiscountCode,
+		mockCustomerTier,
 		normalizeDiscountCode,
-		suggestDiscountCodes,
-		type DiscountCodeSuggestion
+		suggestDiscountCodes
 	} from '$service/discount-code';
+	import type { DiscountCode } from '$lib/entities/discount/discount-code';
+	import CodeScanner from './section/CodeScanner.svelte';
 	import { currentCompany } from '$stores/company/current-company';
 	import { newPartyInfo, OrderFlow, PaymentType, FullfilmentType } from '$lib/entities/order/order';
 	import { currentLanguage } from '$stores/i18n';
@@ -130,6 +133,15 @@
 	var codeInput: string = '';
 	var codeMessage: string = '';
 	var codeOk: boolean = false;
+	// The store's own coupons, loaded when the coupon tab opens — replaces a hardcoded
+	// "ลองโค้ดตัวอย่าง" row with whatever's actually usable for this store/customer.
+	var availableCodes: DiscountCode[] = [];
+	var loadingCodes: boolean = false;
+	var showCodeScanner: boolean = false;
+	var codeInputEl: HTMLElement | undefined;
+	// Tracks which customer the list was last loaded for, so switching the cart's selected
+	// customer while the modal is open reloads it (member-only coupons must follow).
+	var codesLoadedForCustomer: string | undefined = undefined;
 	const phd = {
 		fixed: 'patona-sellercenter-sales-placeholder-fixed',
 		percentage: 'patona-sellercenter-sales-placeholder-percentage'
@@ -199,6 +211,7 @@
 		draftValue = '';
 		clearDraftCode();
 		if (tab !== 'coupon') draftDType = tab;
+		if (tab === 'coupon') onCouponTabOpened();
 	};
 
 	// ssk-tab-button renders a plain <div> with no role and no tabindex, so the
@@ -267,6 +280,67 @@
 		clearDraftCode();
 	};
 
+	// Customer currently on the order (buyer.refId) — the eligibility context a
+	// customer-restricted coupon is checked against. undefined for a walk-in/no-customer
+	// sale, in which case only store-wide codes are offered.
+	$: couponCustomerId = $orderData.buyer?.refId || undefined;
+	$: couponCustomerName = $orderData.buyer?.name || undefined;
+	$: couponCustomerTier = mockCustomerTier(couponCustomerId);
+
+	async function loadAvailableCodes() {
+		codesLoadedForCustomer = couponCustomerId;
+		loadingCodes = true;
+		try {
+			availableCodes = await listAvailableDiscountCodes({
+				storeId: $currentStore?.id,
+				customerId: couponCustomerId,
+				customerTier: couponCustomerTier,
+				subtotal: total
+			});
+		} finally {
+			loadingCodes = false;
+		}
+	}
+
+	// Reloads if the modal is open on the coupon tab and the order's customer changed
+	// since the list was last fetched (e.g. cashier picked a member mid-sale).
+	$: if (showDiscountModal && draftTab === 'coupon' && couponCustomerId !== codesLoadedForCustomer) {
+		loadAvailableCodes();
+	}
+
+	async function focusCodeInput() {
+		await tick();
+		const input = codeInputEl as (HTMLElement & { focus?: () => void }) | undefined;
+		input?.focus?.();
+		// ssk-input is a custom element wrapping a native <input> — fall back to that if
+		// the element itself doesn't proxy .focus().
+		(input as unknown as HTMLElement)?.querySelector?.('input')?.focus();
+	}
+
+	function onCouponTabOpened() {
+		loadAvailableCodes();
+		focusCodeInput();
+	}
+
+	// A handheld USB/Bluetooth scanner types the code then an Enter — submit right away
+	// instead of waiting for a tap on ใช้รหัส.
+	function onCodeInputKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			submitDiscountCode();
+		}
+	}
+
+	function openCodeScanner() {
+		showCodeScanner = true;
+	}
+
+	async function onCodeScanned(e: CustomEvent<string>) {
+		showCodeScanner = false;
+		codeInput = e.detail;
+		await submitDiscountCode();
+	}
+
 	const openDiscountModal = () => {
 		draftDType = dType;
 		draftValue = value;
@@ -280,6 +354,7 @@
 		codeMessage = '';
 		codeOk = false;
 		showDiscountModal = true;
+		if (draftTab === 'coupon') onCouponTabOpened();
 	};
 
 	// A handler, not an inline expression: a TS cast inside markup does not parse (the
@@ -300,7 +375,12 @@
 	}
 
 	async function submitDiscountCode() {
-		const result = await lookupDiscountCode(codeInput);
+		const result = await lookupDiscountCode(codeInput, {
+			storeId: $currentStore?.id,
+			customerId: couponCustomerId,
+			customerTier: couponCustomerTier,
+			subtotal: total
+		});
 		codeMessage = discountCodeMessage(result);
 		codeOk = result.status === 'ok';
 
@@ -318,11 +398,23 @@
 	}
 
 	// Codes that still match what's typed so far, live — see suggestDiscountCodes.
-	$: codeSuggestions = suggestDiscountCodes(codeInput);
+	$: codeSuggestions = suggestDiscountCodes(codeInput, availableCodes);
+	$: storeWideCodes = availableCodes.filter((c) => c.audience === 'all');
+	$: customerCodes = availableCodes.filter((c) => c.audience === 'customer');
+	// Once something's typed, suggestions already narrow both groups into one flat list
+	// (codeSuggestions) — the two labelled sections only make sense on the idle/untyped
+	// view, where "store-wide" vs "customer's own" is worth telling apart.
+	$: showCodeSections = !codeInput.trim();
 
-	// Tapping a suggestion fills the field AND applies it in one tap, rather than just
+	const couponExpiryText = (c: DiscountCode): string | undefined =>
+		c.expiresAt ? `หมดอายุ ${new Date(c.expiresAt).toLocaleDateString('th-TH')}` : undefined;
+
+	const couponMinSpendText = (c: DiscountCode): string | undefined =>
+		c.minSpend ? `ยอดซื้อขั้นต่ำ ฿${c.minSpend}` : undefined;
+
+	// Tapping a coupon row fills the field AND applies it in one tap, rather than just
 	// autocompleting text the cashier would still have to press ใช้รหัส on.
-	async function applySuggestedCode(suggestion: DiscountCodeSuggestion) {
+	async function applySuggestedCode(suggestion: { code: string }) {
 		codeInput = suggestion.code;
 		await submitDiscountCode();
 	}
@@ -910,22 +1002,33 @@
 		     shorter panel just leaves blank space rather than resizing the modal. -->
 		<div class="discount-panel">
 		{#if draftTab === 'coupon'}
-			<!-- Coupon panel — its own text field, no stepper/unit (a code isn't a number),
-			     and a sample-code row that doubles as a hint and a shortcut: it starts as
-			     every active code and narrows to whatever's typed (suggestDiscountCodes),
-			     so there's always something tappable even before the cashier knows a code
-			     by heart. -->
+			<!-- Coupon panel — text field + สแกน (camera QR/barcode) button, no stepper/unit
+			     (a code isn't a number). A handheld USB/BT scanner needs no button at all:
+			     the input is auto-focused on open (focusCodeInput) and Enter submits
+			     (onCodeInputKeydown), same as it types into any other focused field. -->
 			<span class="code-label">รหัสคูปอง</span>
 			<div class="code-controls">
 				<ssk-input
+					bind:this={codeInputEl}
 					size="sm"
 					value={codeInput}
-					placeholder="เช่น SAVE10"
+					placeholder="เช่น SAVE10 หรือสแกนคูปอง"
 					autoComplete="off"
 					on:input={_onChangeCodeInput}
 					on:change={_onChangeCodeInput}
+					on:keydown={onCodeInputKeydown}
 					data-testid="sales.cart.discount.code.input"
 				></ssk-input>
+				<ssk-button
+					size="sm"
+					variant="outline"
+					themeColor="gray"
+					on:click={openCodeScanner}
+					data-testid="sales.cart.discount.code.scan"
+				>
+					<ssk-icon slot="prefix" name="outline-qr-code"></ssk-icon>
+					สแกน
+				</ssk-button>
 				<ssk-button
 					size="sm"
 					variant="outline"
@@ -942,24 +1045,93 @@
 					{codeMessage}
 				</span>
 			{/if}
-			{#if codeSuggestions.length > 0}
-				<div class="code-suggest">
-					<span class="code-suggest-label">ลองโค้ดตัวอย่าง</span>
-					<div class="code-suggest-chips">
-						{#each codeSuggestions as suggestion}
-							<button
-								type="button"
-								class="remark-chip"
-								class:active={normalizeDiscountCode(codeInput) === suggestion.code}
-								on:click={() => applySuggestedCode(suggestion)}
-								data-testid={`sales.cart.discount.code.suggest.${suggestion.code}`}
-							>
-								{suggestion.code}
-							</button>
-						{/each}
+
+			<!-- The store's real coupons — replaces the old "ลองโค้ดตัวอย่าง" sample row.
+			     Typing narrows both sections into one flat matching list (codeSuggestions);
+			     untouched, they show separately so "คูปองของลูกค้า" reads as something extra
+			     a selected member gets, not just more rows mixed into the store list. -->
+			{#if !showCodeSections}
+				{#if codeSuggestions.length > 0}
+					<div class="code-suggest">
+						<span class="code-suggest-label">คูปองที่ตรงกับที่พิมพ์</span>
+						<div class="code-suggest-chips">
+							{#each codeSuggestions as suggestion}
+								<button
+									type="button"
+									class="remark-chip"
+									class:active={normalizeDiscountCode(codeInput) === suggestion.code}
+									title={suggestion.label}
+									on:click={() => applySuggestedCode(suggestion)}
+									data-testid={`sales.cart.discount.code.suggest.${suggestion.code}`}
+								>
+									{suggestion.code}
+								</button>
+							{/each}
+						</div>
 					</div>
+				{/if}
+			{:else if loadingCodes}
+				<span class="code-suggest-label" data-testid="sales.cart.discount.code.loading">
+					กำลังโหลดคูปอง…
+				</span>
+			{:else}
+				{#if customerCodes.length > 0}
+					<div class="code-suggest">
+						<span class="code-suggest-label">
+							คูปองของลูกค้า{couponCustomerName ? ` — ${couponCustomerName}` : ''}
+							{#if couponCustomerTier}<span class="tier-badge">{couponCustomerTier}</span>{/if}
+						</span>
+						<div class="code-suggest-chips">
+							{#each customerCodes as c}
+								<button
+									type="button"
+									class="remark-chip"
+									class:active={normalizeDiscountCode(codeInput) === c.code}
+									title={[c.label, couponMinSpendText(c), couponExpiryText(c)].filter(Boolean).join(' · ')}
+									on:click={() => applySuggestedCode(c)}
+									data-testid={`sales.cart.discount.code.suggest.${c.code}`}
+								>
+									{c.code}
+								</button>
+							{/each}
+						</div>
+					</div>
+				{:else if !couponCustomerId}
+					<span class="code-suggest-label" data-testid="sales.cart.discount.code.hint-select-customer">
+						เลือกลูกค้าเพื่อดูคูปองเฉพาะสมาชิก
+					</span>
+				{/if}
+
+				<div class="code-suggest">
+					<span class="code-suggest-label">คูปองที่ใช้ได้</span>
+					{#if storeWideCodes.length > 0}
+						<div class="code-suggest-chips">
+							{#each storeWideCodes as c}
+								<button
+									type="button"
+									class="remark-chip"
+									class:active={normalizeDiscountCode(codeInput) === c.code}
+									title={[c.label, couponMinSpendText(c), couponExpiryText(c)].filter(Boolean).join(' · ')}
+									on:click={() => applySuggestedCode(c)}
+									data-testid={`sales.cart.discount.code.suggest.${c.code}`}
+								>
+									{c.code}
+								</button>
+							{/each}
+						</div>
+					{:else}
+						<span class="code-suggest-label" data-testid="sales.cart.discount.code.empty">
+							ร้านนี้ยังไม่มีคูปองที่ใช้ได้
+						</span>
+					{/if}
 				</div>
 			{/if}
+
+			<CodeScanner
+				open={showCodeScanner}
+				on:decode={onCodeScanned}
+				on:close={() => (showCodeScanner = false)}
+			/>
 		{:else}
 			<!-- Percent/Amount panel. -->
 			<span class="code-label">{draftTab === 'percentage' ? 'ส่วนลดเปอร์เซ็นต์' : 'ส่วนลดเป็นบาท'}</span>
@@ -1641,6 +1813,12 @@
 		width: 100%;
 		box-sizing: border-box;
 		padding: 0.25rem 0 0;
+		/* The DS modal caps its body height, and a height-capped grid shrinks its rows
+		   below their content — the coupon list and breakdown then painted on top of
+		   each other. Rows keep their own height; the body scrolls instead. */
+		grid-auto-rows: max-content;
+		max-height: calc(100dvh - 12rem);
+		overflow-y: auto;
 	}
 
 	.remark-fields {
@@ -1840,9 +2018,24 @@
 	   direct (and so directly gapped) child of it. */
 	.discount-panel {
 		display: grid;
+		grid-auto-rows: max-content;
 		align-content: start;
 		gap: 0.625rem;
 		min-height: 14rem;
+		/* Anchors CodeScanner's full-cover overlay (position: absolute) to this panel
+		   instead of the nearest positioned ancestor further up the page. */
+		position: relative;
+	}
+
+	.tier-badge {
+		display: inline-block;
+		margin-left: 0.375rem;
+		padding: 0.0625rem 0.5rem;
+		border-radius: 999px;
+		background: var(--ssk-colors-primary-50, #fdf0ea);
+		color: var(--ssk-colors-primary-500);
+		font-weight: 600;
+		font-size: var(--ssk-font-size-xs);
 	}
 
 	.tab-text {
@@ -2136,6 +2329,51 @@
 
 		.quick-chip {
 			padding: 0 0.25rem;
+		}
+	}
+
+	/* ส่วนลด modal at phone width (~360px) and small tablets. The Modal component already
+	   caps its own width at `calc(100vw - 2.5rem)` (see the <Modal width=...> prop in the
+	   markup) — what's left is making everything INSIDE that narrower box behave: the
+	   body scrolls within the viewport instead of pushing the footer off-screen (100dvh,
+	   not 100vh, so iOS Safari's address bar doesn't clip it), the 3 tabs stay one line
+	   each instead of wrapping into a jumble, and the code input's own row (now input +
+	   สแกน + ใช้รหัส) wraps onto its own lines instead of squeezing three controls into
+	   ~300px. */
+	@media (max-width: 480px) {
+		.modal-fields {
+			max-height: calc(100dvh - 9rem);
+			overflow-y: auto;
+			-webkit-overflow-scrolling: touch;
+		}
+
+		.discount-tabs {
+			margin-bottom: 0.5rem;
+		}
+
+		.tab-text {
+			gap: 0.25rem;
+			padding: 0.2rem;
+		}
+
+		.tab-text span {
+			font-size: var(--ssk-font-size-xs);
+		}
+
+		.discount-panel {
+			min-height: 0;
+		}
+
+		.code-controls {
+			flex-wrap: wrap;
+		}
+
+		.code-controls ssk-input {
+			flex: 1 1 100%;
+		}
+
+		.code-controls ssk-button {
+			flex: 1 1 auto;
 		}
 	}
 </style>
