@@ -582,7 +582,6 @@
 	// method/fee — "ข้อมูลการจัดส่ง" is one decision for an online sale, not two drawers.
 	// Only true while there's a single Shipping pile, though — see hasMultiAddressShipping
 	// and showPaymentDrawer below for the "จัดส่งหลายที่อยู่" case.
-	let draftPayment: string = 'unknown';
 
 	// "จัดส่งหลายที่อยู่" only — payment is still one choice for the whole sale regardless
 	// of how many Shipping piles it fans into, so it gets its own small drawer here instead
@@ -591,6 +590,15 @@
 	// drawer-backed field, just scoped to this one radio group instead of a whole pile.
 	let showPaymentDrawer = false;
 	let draftPaymentStandalone: string = 'unknown';
+	// No ไม่ระบุ: an online order must always say how it is paid.
+	// เก็บเงินปลายทาง only means something when a parcel actually goes out — a sale
+	// collected purely by รับภายหลัง/ให้บริการ/ดิจิทัล has no courier to collect it.
+	$: onlinePaymentValues = (hasShip
+		? [PaymentType.BankTransfer, PaymentType.Cod]
+		: [PaymentType.BankTransfer]) as string[];
+	$: if (isOnline && !hasShip && $orderData.paymentType === PaymentType.Cod) setPaymentType('unknown');
+	$: paymentMissing =
+		isOnline && !isMarketplaceOnline && (!$orderData.paymentType?.trim() || $orderData.paymentType === 'unknown');
 	function openPaymentDrawer() {
 		draftPaymentStandalone = $orderData.paymentType?.trim() ? $orderData.paymentType : 'unknown';
 		showPaymentDrawer = true;
@@ -660,7 +668,6 @@
 			draftMethod = group?.method ?? 'unknown';
 			draftVehicleType = group?.vehicleType ?? 'unknown';
 			draftFee = group?.shippingFee !== undefined ? String(group.shippingFee) : '';
-			draftPayment = $orderData.paymentType?.trim() ? $orderData.paymentType : 'unknown';
 		} else if (kind === DeliveryGroupKind.OnSite) {
 			draftTravelFee = onSiteGroup?.shippingFee !== undefined ? String(onSiteGroup.shippingFee) : '';
 			draftOnSiteLocation = onSiteGroup?.onSiteLocation;
@@ -716,14 +723,6 @@
 							: undefined,
 					shippingFee: draftFee === '' ? undefined : Number(draftFee) || 0
 				});
-			}
-			// Marketplace channels dictate their own payment method (see the reactive
-			// auto-sync below) — nothing to save here for those. Multi-address sales also skip
-			// this: their payment field lives outside the per-pile drawer entirely (see
-			// hasMultiAddressShipping), committing straight to setPaymentType on its own change
-			// handler instead of riding along with this drawer's draftPayment/ยกเลิก flow.
-			if (isOnline && !isMarketplaceChannel(subChannel) && !hasMultiAddressShipping) {
-				setPaymentType(draftPayment);
 			}
 		} else if (editingKind === DeliveryGroupKind.OnSite && onSiteGroup) {
 			updateDeliveryGroup(onSiteGroup.id, {
@@ -1387,9 +1386,7 @@
 >
 	<ssk-drawer-header
 		slot="header"
-		title={editingKind === DeliveryGroupKind.Shipping && isOnline
-			? 'ตั้งค่าการชำระและจัดส่ง'
-			: editingKind
+		title={editingKind
 				? `ตั้งค่า${basicCategoryLabel(editingKind)}`
 				: ''}
 		close={() => {
@@ -1579,13 +1576,6 @@
 				{/if}
 				{#if editingKind === DeliveryGroupKind.Shipping}
 					{#if isBasicMarketplaceShip}
-						{#if isOnline}
-							<div class="pile-row static" data-testid="sales.pile.payment.platform">
-								<ssk-icon name="outline-credit-card" size="xs" themeColor="primary"></ssk-icon>
-								<span class="pile-row-label">ชำระเงิน</span>
-								<span class="pile-row-value">ตามแพลตฟอร์ม ({subChannelOption?.label ?? subChannel})</span>
-							</div>
-						{/if}
 						<div class="pile-row static" data-testid="sales.pile.shipping.courier.platform">
 							<ssk-icon name="outline-truck" size="xs" themeColor="primary"></ssk-icon>
 							<span class="pile-row-label">ขนส่ง</span>
@@ -1617,29 +1607,6 @@
 							</div>
 						</div>
 					{:else}
-						{#if isOnline && !hasMultiAddressShipping}
-							<!-- Payment rides in this same drawer, not a separate one — "ข้อมูลการ
-							     จัดส่ง" is one decision for an online sale. Asked first: how the
-							     buyer pays is decided before how it ships. Only true while there's
-							     just the one Shipping pile, though — once "จัดส่งหลายที่อยู่" fans it
-							     into several, THIS drawer is per-pile (courier/fee) while payment stays
-							     one sale-wide choice, so it moves to its own field next to
-							     ช่องทางการขาย instead of appearing to be per-pile here too. -->
-							<div class="inline-settings">
-								<span class="field-label">วิธีการชำระเงิน<span class="required">*</span></span>
-								<CustomFancyRadioGroup
-									label=""
-									options={renderDeliveryOptions(
-										paymentMethods.filter((m) =>
-											['unknown', PaymentType.BankTransfer, PaymentType.Cod].includes(m.value)
-										)
-									)}
-									optionsPerRow={2}
-									value={draftPayment}
-									onChange={(v) => (draftPayment = v)}
-								/>
-							</div>
-						{/if}
 						<!-- Basic mode inline — never opens DrawerDelivery (the group-order drawer),
 						     per the rule that basic mode has nothing to do with it. -->
 						<div class="inline-settings">
@@ -1871,9 +1838,7 @@
 		<CustomFancyRadioGroup
 			label=""
 			options={renderDeliveryOptions(
-				paymentMethods.filter((m) =>
-					['unknown', PaymentType.BankTransfer, PaymentType.Cod].includes(m.value)
-				)
+				paymentMethods.filter((m) => onlinePaymentValues.includes(m.value))
 			)}
 			optionsPerRow={2}
 			value={draftPaymentStandalone}
@@ -2323,25 +2288,38 @@
 				{/if}
 			</div>
 
-			{#if isOnline && hasMultiAddressShipping && !isMarketplaceChannel(subChannel)}
-				<!-- Same dest-trigger-opens-a-drawer pattern every other field below uses
-				     (สาขาที่รับ, ข้อมูลการจัดส่ง, ...) — only surfaces once "จัดส่งหลายที่อยู่"
-				     is in play; otherwise payment still rides inside วิธีการจัดส่ง's own
-				     per-pile drawer, see that drawer's own comment. -->
+			{#if isOnline}
+				<!-- The order's ONE payment choice, covering every fulfilment group together —
+				     always shown for online, whatever the sale is collected through (a
+				     รับภายหลัง/ให้บริการ/ดิจิทัล-only sale still has to be paid for). No per-pile
+				     drawer carries payment any more, so there is never a second place to set it. -->
 				<div class="field">
-					<span class="field-label">วิธีการชำระเงิน<span class="required">*</span></span>
-					<button
-						type="button"
-						class="dest-trigger"
-						on:click={openPaymentDrawer}
-						data-testid="sales.payment.open"
-					>
-						<ssk-icon name="outline-credit-card" size="sm" themeColor="primary"></ssk-icon>
-						<span class="dest-trigger-value">
-							{getLabelFromValue($orderData.paymentType, 'paymentMethods')}
-						</span>
-						<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
-					</button>
+					<span class="field-label">
+						วิธีการชำระเงิน{#if paymentMissing}<span class="required">*</span>{/if}
+					</span>
+					{#if isMarketplaceOnline}
+						<div class="dest-trigger static" data-testid="sales.payment.platform">
+							<ssk-icon name="outline-credit-card" size="sm" themeColor="primary"></ssk-icon>
+							<span class="dest-trigger-value">
+								ตามแพลตฟอร์ม ({subChannelOption?.label ?? subChannel})
+							</span>
+						</div>
+					{:else}
+						<button
+							type="button"
+							class="dest-trigger"
+							on:click={openPaymentDrawer}
+							data-testid="sales.payment.open"
+						>
+							<ssk-icon name="outline-credit-card" size="sm" themeColor="primary"></ssk-icon>
+							<span class="dest-trigger-value" class:placeholder={paymentMissing}>
+								{paymentMissing
+									? 'เลือกวิธีการชำระเงิน'
+									: getLabelFromValue($orderData.paymentType, 'paymentMethods')}
+							</span>
+							<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
+						</button>
+					{/if}
 				</div>
 			{/if}
 
@@ -2403,7 +2381,7 @@
 			{#if isSingleBucket && hasShip}
 				<div class="field">
 					<span class="field-label">
-						{isOnline ? 'ข้อมูลการชำระและจัดส่ง' : 'ข้อมูลการจัดส่ง'}{#if shipInfoMissing}<span
+						ข้อมูลการจัดส่ง{#if shipInfoMissing}<span
 								class="required">*</span
 							>{/if}
 					</span>
@@ -2415,9 +2393,6 @@
 					>
 						<ssk-icon name="outline-truck" size="sm" themeColor="primary"></ssk-icon>
 						<span class="dest-trigger-value" class:placeholder={!shippingGroup?.method}>
-							{#if isOnline}
-								{getLabelFromValue($orderData.paymentType, 'paymentMethods')} ·
-							{/if}
 							{#if shippingGroup?.method}
 								{methodLabel(shippingGroup.method)} · {formatPriceWithBath(
 									shippingGroup.shippingFee ?? 0
@@ -2607,6 +2582,7 @@
 	{discount}
 	{summary}
 	{isOnline}
+	isPaymentMissing={paymentMissing}
 	{isLinkBill}
 	pickupStoreId={footerPickupStoreId}
 	onSaleReset={resetSaleDefaults}
@@ -2899,6 +2875,10 @@
 		white-space: nowrap;
 		font-size: var(--ssk-font-size-sm);
 		color: var(--ssk-colors-gray-800);
+	}
+
+	.dest-trigger.static {
+		cursor: default;
 	}
 
 	.dest-trigger-value.placeholder {

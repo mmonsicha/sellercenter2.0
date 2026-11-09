@@ -78,6 +78,8 @@
 	export let isDeliveryLater: boolean;
 	export let isBuyerValid: boolean;
 	export let isOnline: boolean;
+	// Online's one sale-wide payment choice is still unpicked (see Cart.svelte's paymentMissing).
+	export let isPaymentMissing: boolean = false;
 	// LINK_BILL sends the buyer a payment link instead of taking payment at the counter.
 	// The link endpoint does not exist yet, so the action is visible but inert — better
 	// than pretending an order was created.
@@ -1631,6 +1633,7 @@
 				disabled={!hasItem ||
 					isProcessing ||
 					(isOnline && !isBuyerValid) ||
+					isPaymentMissing ||
 					($showDeliveryDetail && $deliverySummary.missing.length > 0)}
 				on:click={_onClickOnlineSave}
 			>
