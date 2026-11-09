@@ -412,6 +412,14 @@
 	// minus รับทันที — so it badges exactly like POS once more than one bucket is in play,
 	// gated by the same plain bucket count, not forced plain regardless of it.
 	$: plainList = buckets.length <= 1;
+	// Read back by Cart.svelte (bind:) so its single-bucket inline rows (สาขาที่รับ /
+	// ข้อมูลการจัดส่ง / ...) gate on exactly the buckets drawn here. Counting them again
+	// from deliveryGroups could disagree (a stale group of another kind) and then neither
+	// the plain list's inline rows nor a badge pile showed the bucket's settings at all.
+	export let bucketCount = 0;
+	export let soleKind: DeliveryGroupKind | undefined = undefined;
+	$: bucketCount = buckets.length;
+	$: soleKind = buckets.length === 1 ? buckets[0].kind : undefined;
 
 	// Cross-pile drag target — dropping a line from a DIFFERENT pile here moves it (same
 	// onChangeFulfilment the old per-line dropdown used); dropping within its OWN pile is

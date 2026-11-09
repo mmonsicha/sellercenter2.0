@@ -379,9 +379,14 @@ describe('syncDeliveryGroups', () => {
 	});
 });
 
-// VITE_DISABLE_MULTI_PARCEL: no backend emails a digital parcel yet, so production can
-// switch the whole feature off (feature-flags.ts). Disabled must behave exactly like the
-// empty-cart case — no groups at all, even for a cart that would otherwise hard-split.
+// VITE_DISABLE_MULTI_PARCEL: no backend emails a digital parcel yet (feature-flags.ts),
+// but that is the ONLY thing the flag was ever about. CartFulfilmentPiles already draws
+// one pile per kind present in the cart regardless of this flag (resolveLineKind/
+// computeKindBuckets don't read it at all), so syncDeliveryGroups must keep building the
+// exact same per-kind groups either way — otherwise a pile's settings drawer has no group
+// to save into (shippingGroupFor/pickupLaterGroupFor/onSiteGroup/digitalGroup all come up
+// empty) and it is stuck showing "ข้อมูลไม่ครบ" forever. See delivery-group.ts
+// syncDeliveryGroups' own comment.
 describe('syncDeliveryGroups — VITE_DISABLE_MULTI_PARCEL', () => {
 	beforeEach(() => {
 		resetDeliveryGroups();
@@ -392,24 +397,8 @@ describe('syncDeliveryGroups — VITE_DISABLE_MULTI_PARCEL', () => {
 		isMultiParcelEnabledMock.mockReturnValue(true);
 	});
 
-	it('produces no groups for a physical + digital shopDelivery cart while the flag is disabled', () => {
+	it('still splits a physical + digital shopDelivery cart into 2 groups while the flag is disabled', () => {
 		isMultiParcelEnabledMock.mockReturnValue(false);
-
-		syncDeliveryGroups([physicalItem('p1'), digitalItem('d1')], {
-			fulfilmentType: FullfilmentType.ShopDelivery,
-			isDelivery: true,
-			recipientName: 'คุณลูกค้า',
-			recipientAddress: '123 ถ.สุขุมวิท',
-			recipientEmail: 'buyer@example.com'
-		});
-
-		expect(get(deliveryGroups)).toEqual([]);
-		expect(get(showDeliveryDetail)).toBe(false);
-		expect(get(hasSplitDelivery)).toBe(false);
-	});
-
-	it('still splits the same cart into 2 groups once the flag is enabled again', () => {
-		isMultiParcelEnabledMock.mockReturnValue(true);
 
 		syncDeliveryGroups([physicalItem('p1'), digitalItem('d1')], {
 			fulfilmentType: FullfilmentType.ShopDelivery,
@@ -424,6 +413,27 @@ describe('syncDeliveryGroups — VITE_DISABLE_MULTI_PARCEL', () => {
 		expect(groups.map((g) => g.kind).sort()).toEqual(
 			[DeliveryGroupKind.Shipping, DeliveryGroupKind.Digital].sort()
 		);
+	});
+
+	it('builds the identical group set whether the flag is enabled or disabled', () => {
+		const run = () => {
+			resetDeliveryGroups();
+			syncDeliveryGroups([physicalItem('p1'), digitalItem('d1')], {
+				fulfilmentType: FullfilmentType.ShopDelivery,
+				isDelivery: true,
+				recipientName: 'คุณลูกค้า',
+				recipientAddress: '123 ถ.สุขุมวิท',
+				recipientEmail: 'buyer@example.com'
+			});
+			return get(deliveryGroups).map((g) => ({ kind: g.kind, itemIds: g.itemIds }));
+		};
+
+		isMultiParcelEnabledMock.mockReturnValue(true);
+		const enabled = run();
+		isMultiParcelEnabledMock.mockReturnValue(false);
+		const disabled = run();
+
+		expect(disabled).toEqual(enabled);
 	});
 });
 
@@ -961,7 +971,7 @@ describe('basic mode — fulfilment-grouping scenarios', () => {
 		);
 	});
 
-	it('B8 — online marketplace (shopee): single Shipping group, courier = platform, method "platform", fee left for the merchant to set, every physical line forced to Shipping', () => {
+	it('B8 — online marketplace (shopee): single Shipping group, courier = platform, method "platform", fee left for the merchant to set; a line picked as รับภายหลัง keeps its own group', () => {
 		syncDeliveryGroups(
 			[
 				physicalItem('item-1', { lineFulfilment: DeliveryGroupKind.PickupLater }),
@@ -978,16 +988,16 @@ describe('basic mode — fulfilment-grouping scenarios', () => {
 		);
 
 		const groups = get(deliveryGroups);
-		expect(groups).toHaveLength(1);
-		const shipping = groups[0];
-		expect(shipping.kind).toBe(DeliveryGroupKind.Shipping);
+		expect(groups).toHaveLength(2);
+		expect(groups.find((g) => g.kind === DeliveryGroupKind.PickupLater)?.itemIds).toEqual(['item-1']);
+		const shipping = groups.find((g) => g.kind === DeliveryGroupKind.Shipping)!;
 		expect(shipping.courier).toBe('shopee');
 		expect(shipping.method).toBe('platform');
 		// Courier/method are locked to the platform, but the fee is still the merchant's own
 		// to set (same field as any other shipping group) — it starts unset, not a stamped 0
 		// that would silently overwrite whatever the merchant types in on every re-sync.
 		expect(shipping.shippingFee).toBeUndefined();
-		expect(shipping.itemIds.sort()).toEqual(['item-1', 'item-2']);
+		expect(shipping.itemIds).toEqual(['item-2']);
 
 		// feeUnknown is deliberately always false now — a fee the merchant hasn't set yet is
 		// ฿0 until they say otherwise, not a blocking "unknown" state (see

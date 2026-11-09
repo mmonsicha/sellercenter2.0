@@ -274,7 +274,17 @@
 		(hasOnSite ? 1 : 0) +
 		(hasPickupInStore ? 1 : 0) +
 		(hasDigital ? 1 : 0);
-	$: isSingleBucket = totalBucketCount <= 1;
+	// Filled by CartFulfilmentPiles (bind:) — the buckets it actually draws. Only rendered
+	// with items in the cart, so an empty cart still falls back to totalBucketCount.
+	let pileBucketCount = 0;
+	let pileSoleKind: DeliveryGroupKind | undefined;
+	$: isSingleBucket = cartList?.length > 0 ? pileBucketCount <= 1 : totalBucketCount <= 1;
+	// The one kind the single-bucket inline rows belong to (undefined once 2+ buckets).
+	$: soleKind = !isSingleBucket
+		? undefined
+		: cartList?.length > 0
+			? pileSoleKind
+			: presentKinds[0];
 	// The collapsed "รูปแบบการรับสินค้า" trigger must say what's actually IN the cart, not
 	// the sale's raw default — a line added through "เพิ่มตัวเลือกรับสินค้า" carries its own
 	// override, so whenever every line in the cart agrees on one kind, that kind is what
@@ -420,7 +430,7 @@
 	// no other legal destination either way (lineFulfilmentOptions' own marketplace branch).
 	$: isDelivery =
 		(isPos && fullfilmentType === FullfilmentType.ShopDelivery) ||
-		(isOnline && (isMarketplaceOnline || fullfilmentType === FullfilmentType.ShopDelivery));
+		(isOnline && fullfilmentType === FullfilmentType.ShopDelivery);
 	// "รับบางส่วน" (Option B) only ever applies to a POS จัดส่งให้ลูกค้า sale — no fourth
 	// FullfilmentType is added for it. order-flow.ts already maps ShopDelivery to the
 	// deliver-from-store flow, which is the correct order-level flow for a sale that part-
@@ -448,6 +458,8 @@
 		// Basic mode fields — see LineFulfilmentCtx / syncBasicGroups.
 		channel: (isOnline ? 'online' : isLinkBill ? 'linkbill' : 'pos') as 'pos' | 'online' | 'linkbill',
 		subChannel,
+		// Only decides how a Shipping group ships (courier "ตามแพลตฟอร์ม") — a marketplace
+		// sale still picks รูปแบบการรับสินค้า freely (see syncBasicGroups' lineCtx).
 		marketplace: isMarketplaceOnline,
 		recipientPhone: buyer?.phone,
 		pickupStoreId,
@@ -514,6 +526,23 @@
 		editingAddressId = undefined;
 		action();
 	};
+	// The settings drawer a customer/address pick was started from — reopened the moment
+	// the customer drawer closes, so picking an address mid-setup lands the cashier back
+	// where they were instead of making them reopen the pile's settings by hand. Drafts
+	// (courier, fee, branch...) are untouched while it's closed, so they survive the trip.
+	let settingsReturn:
+		| { kind: DeliveryGroupKind; pickupStoreId?: string; addressId?: string }
+		| undefined;
+	const openCustomerFromSettings = (half: 'customer' | 'address') => {
+		if (editingKind) {
+			settingsReturn = {
+				kind: editingKind,
+				pickupStoreId: editingPickupStoreId,
+				addressId: editingAddressId
+			};
+		}
+		runFromSettings(() => openCustomerDrawer(half));
+	};
 	$: isSavableKind =
 		editingKind === DeliveryGroupKind.Shipping ||
 		editingKind === DeliveryGroupKind.OnSite ||
@@ -578,35 +607,27 @@
 		draftPickupDate = picked ? formatDateToIsoLocal(picked) : '';
 		draftPickupTimeSlot = picked ? formatTimeSlotLocal(picked) : '';
 	}
-	// Online's payment method rides in the SAME Shipping settings panel as the delivery
-	// method/fee — "ข้อมูลการจัดส่ง" is one decision for an online sale, not two drawers.
-	// Only true while there's a single Shipping pile, though — see hasMultiAddressShipping
-	// and showPaymentDrawer below for the "จัดส่งหลายที่อยู่" case.
-
-	// "จัดส่งหลายที่อยู่" only — payment is still one choice for the whole sale regardless
-	// of how many Shipping piles it fans into, so it gets its own small drawer here instead
-	// of living inside any one pile's settings (see that drawer's own comment on why it
-	// hides there once this is true). Same draft+save+ยกเลิก pattern as every other
-	// drawer-backed field, just scoped to this one radio group instead of a whole pile.
-	let showPaymentDrawer = false;
-	let draftPaymentStandalone: string = 'unknown';
-	// No ไม่ระบุ: an online order must always say how it is paid.
-	// เก็บเงินปลายทาง only means something when a parcel actually goes out — a sale
-	// collected purely by รับภายหลัง/ให้บริการ/ดิจิทัล has no courier to collect it.
-	$: onlinePaymentValues = (hasShip
-		? [PaymentType.BankTransfer, PaymentType.Cod]
-		: [PaymentType.BankTransfer]) as string[];
-	$: if (isOnline && !hasShip && $orderData.paymentType === PaymentType.Cod) setPaymentType('unknown');
+	// Online's ONE payment choice for the whole order — a dropdown styled like
+	// ช่องทางการขาย. No ไม่ระบุ: an online order must always say how it is paid.
+	// `hidden` options are planned but not offered yet (QR code — no backend flow).
+	const ONLINE_PAYMENT_OPTIONS: { value: string; label: string; icon: string; hidden?: boolean }[] = [
+		{ value: PaymentType.BankTransfer, label: 'โอนผ่านธนาคาร', icon: 'outline-building-library' },
+		{ value: PaymentType.Cod, label: 'เก็บเงินปลายทาง (COD)', icon: 'outline-truck' },
+		{ value: 'qrCode', label: 'QR Code', icon: 'outline-qr-code', hidden: true }
+	];
+	// COD is collected by the courier on delivery, so it needs a parcel going out AND no
+	// รับภายหลัง group — goods the customer collects at a branch can't be paid on delivery.
+	$: codAllowed = hasShip && !hasPickupLater;
+	$: onlinePaymentOptions = ONLINE_PAYMENT_OPTIONS.filter(
+		(o) => !o.hidden && (codAllowed || o.value !== PaymentType.Cod)
+	);
+	$: onlinePaymentOption = ONLINE_PAYMENT_OPTIONS.find((o) => o.value === $orderData.paymentType);
+	$: if (isOnline && !codAllowed && $orderData.paymentType === PaymentType.Cod) setPaymentType('unknown');
+	const paymentLabel = (value?: string): string =>
+		ONLINE_PAYMENT_OPTIONS.find((o) => o.value === value)?.label ??
+		getLabelFromValue(value ?? '', 'paymentMethods');
 	$: paymentMissing =
 		isOnline && !isMarketplaceOnline && (!$orderData.paymentType?.trim() || $orderData.paymentType === 'unknown');
-	function openPaymentDrawer() {
-		draftPaymentStandalone = $orderData.paymentType?.trim() ? $orderData.paymentType : 'unknown';
-		showPaymentDrawer = true;
-	}
-	function savePaymentDrawer() {
-		setPaymentType(draftPaymentStandalone);
-		showPaymentDrawer = false;
-	}
 
 	// Resolves the specific รับภายหลัง group a pile's settings button means — an undefined
 	// target (the single-kind inline row, where there is no ambiguity to begin with) must
@@ -747,7 +768,12 @@
 		const ids = new Set(liveGroups.filter((g) => g.kind === kind).flatMap((g) => g.itemIds));
 		return liveGroups.length > 0 ? (cartList ?? []).filter((i) => !!i.lineId && ids.has(i.lineId)) : cartList ?? [];
 	};
-	$: isMultiFulfilment = displayKinds.length > 1;
+	// Labels only ("หลายรูปแบบ (N หมวด)"): a pile the cashier just opened via
+	// "+เพิ่มตัวเลือกรับสินค้า" counts the moment it exists, before any item is moved in.
+	$: labelKinds = Array.from(
+		new Set([...displayKinds, ...(isOnline ? onlineOpenPiles : $openFulfilmentPiles).map((p) => p.kind)])
+	);
+	$: isMultiFulfilment = labelKinds.length > 1;
 	$: hasShip = presentKinds.includes(DeliveryGroupKind.Shipping);
 	$: hasOnSite = presentKinds.includes(DeliveryGroupKind.OnSite);
 	$: hasPickupLater = presentKinds.includes(DeliveryGroupKind.PickupLater);
@@ -1059,6 +1085,12 @@
 	function toggleDrawerCustomer() {
 		showPileMenu = false;
 		showDrawerCustomer = !showDrawerCustomer;
+		if (!showDrawerCustomer && settingsReturn) {
+			editingKind = settingsReturn.kind;
+			editingPickupStoreId = settingsReturn.pickupStoreId;
+			editingAddressId = settingsReturn.addressId;
+			settingsReturn = undefined;
+		}
 	}
 
 	// Both panel rows lead to the same drawer; the row only says which half was asked for.
@@ -1422,7 +1454,7 @@
 						type="button"
 						class="pile-row"
 						class:warn={!selectedAddress}
-						on:click={() => runFromSettings(() => openCustomerDrawer(buyer?.name ? 'address' : 'customer'))}
+						on:click={() => openCustomerFromSettings(buyer?.name ? 'address' : 'customer')}
 						data-testid={`sales.pile.${editingKind}.address`}
 					>
 						<ssk-icon name="outline-map-pin" size="xs" themeColor={selectedAddress ? 'primary' : 'error'}></ssk-icon>
@@ -1479,7 +1511,7 @@
 							<button
 								type="button"
 								class="pile-row warn"
-								on:click={() => runFromSettings(() => openCustomerDrawer('customer'))}
+								on:click={() => openCustomerFromSettings('customer')}
 								data-testid="sales.pile.onSite.address"
 							>
 								<ssk-icon name="outline-map-pin" size="xs" themeColor="error"></ssk-icon>
@@ -1494,7 +1526,7 @@
 										<button
 											type="button"
 											class="link"
-											on:click={() => runFromSettings(() => openCustomerDrawer('address'))}
+											on:click={() => openCustomerFromSettings('address')}
 											data-testid="sales.pile.onSite.address.add"
 										>
 											เพิ่มที่อยู่ใหม่
@@ -1505,7 +1537,7 @@
 									<button
 										type="button"
 										class="pile-row warn"
-										on:click={() => runFromSettings(() => openCustomerDrawer('address'))}
+										on:click={() => openCustomerFromSettings('address')}
 										data-testid="sales.pile.onSite.address.create"
 									>
 										<ssk-icon name="outline-map-pin" size="xs" themeColor="error"></ssk-icon>
@@ -1758,7 +1790,7 @@
 						type="button"
 						class="pile-row"
 						class:warn={!buyer?.email && !buyer?.phone}
-						on:click={() => runFromSettings(() => openCustomerDrawer('customer'))}
+						on:click={() => openCustomerFromSettings('customer')}
 						data-testid="sales.pile.digital.contact"
 					>
 						<ssk-icon name="outline-bolt" size="xs" themeColor={buyer?.email || buyer?.phone ? 'primary' : 'error'}></ssk-icon>
@@ -1814,49 +1846,6 @@
 			data-testid={isSavableKind ? 'sales.fulfilment.settings.save' : 'sales.fulfilment.settings.done'}
 		>
 			{isSavableKind ? 'บันทึก' : 'เสร็จสิ้น'}
-		</ssk-button>
-	</div>
-</ssk-drawer>
-
-<!-- "จัดส่งหลายที่อยู่" only — see showPaymentDrawer's own comment. A small drawer of its
-     own rather than folding into the editingKind drawer above: payment isn't a
-     DeliveryGroupKind and isn't scoped to any one pile, so it doesn't fit that drawer's
-     per-pile title/footer logic. -->
-<ssk-drawer
-	width="min(30rem, 100vw)"
-	side="right"
-	show={showPaymentDrawer}
-	bodypadding="20px"
-	on:close={() => (showPaymentDrawer = false)}
->
-	<ssk-drawer-header
-		slot="header"
-		title="วิธีการชำระเงิน"
-		close={() => (showPaymentDrawer = false)}
-	/>
-	<div class="settings-body" slot="body">
-		<CustomFancyRadioGroup
-			label=""
-			options={renderDeliveryOptions(
-				paymentMethods.filter((m) => onlinePaymentValues.includes(m.value))
-			)}
-			optionsPerRow={2}
-			value={draftPaymentStandalone}
-			onChange={(v) => (draftPaymentStandalone = v)}
-		/>
-	</div>
-	<div slot="footer" class="footer">
-		<ssk-button
-			variant="outline"
-			themeColor="gray"
-			width="full"
-			on:click={() => (showPaymentDrawer = false)}
-			data-testid="sales.payment.cancel"
-		>
-			ยกเลิก
-		</ssk-button>
-		<ssk-button width="full" on:click={savePaymentDrawer} data-testid="sales.payment.save">
-			บันทึก
 		</ssk-button>
 	</div>
 </ssk-drawer>
@@ -1952,11 +1941,11 @@
 							     Shipping addresses), "จัดส่งหลายที่อยู่" no longer says what's actually
 							     going on once a different KIND is also in play, so it's replaced with
 							     the same "หลายรูปแบบ (N หมวด)" wording the POS dropdown trigger already
-							     uses for this exact situation (isMultiFulfilment/displayKinds.length). -->
+							     uses for this exact situation (isMultiFulfilment/labelKinds.length). -->
 							{subChannelOption?.label ?? 'ไม่ระบุ'} ·
-							{getLabelFromValue($orderData.paymentType, 'paymentMethods')} ·
+							{paymentLabel($orderData.paymentType)} ·
 							{isMultiFulfilment
-								? `หลายรูปแบบ (${displayKinds.length} หมวด)`
+								? `หลายรูปแบบ (${labelKinds.length} หมวด)`
 								: singleDeliveryGroup?.method
 									? methodLabel(singleDeliveryGroup.method)
 									: 'ยังไม่เลือกขนส่ง'}
@@ -2061,7 +2050,7 @@
 					</ssk-dropdown>
 				</div>
 			{/if}
-			{#if isPos || (isOnline && !isMarketplaceOnline)}
+			{#if isPos || isOnline}
 				<!-- This dropdown is the DEFAULT every physical line not re-picked by the
 				     cashier follows (see handleSelectOption's ResetPhysicalLineFulfilment), even
 				     with several categories present at once via "เพิ่มตัวเลือกรับสินค้า". Online
@@ -2123,7 +2112,7 @@
 							{#if isMultiFulfilment}
 							<span class="selector-body" data-testid="sales.fulfilment.multi">
 								<ssk-icon name="outline-squares-2x2" size="md" themeColor="primary"></ssk-icon>
-								<span class="selector-title">หลายรูปแบบ ({displayKinds.length} หมวด)</span>
+								<span class="selector-title">หลายรูปแบบ ({labelKinds.length} หมวด)</span>
 							</span>
 							{:else}
 							<span class="selector-body">
@@ -2204,26 +2193,6 @@
 					<span class="field-label">
 						ลูกค้า{#if customerRequired}<span class="required">*</span>{/if}
 					</span>
-					<!-- Online's own standalone "+ที่อยู่" shortcut — now restricted to marketplace
-					     sub-channels only (Shopee/Lazada/...), which never show the new
-					     "เพิ่มตัวเลือกรับสินค้า" menu above (see its own `!isMarketplaceOnline`
-					     gate) since those physical lines have no other legal destination to offer
-					     a choice between (lineFulfilmentOptions' marketplace branch). An ordinary
-					     online sale now opens its second Shipping address through that same unified
-					     menu instead (its own "จัดส่งจากหน้าร้าน" pile reuses this very
-					     openAddShippingPile function) — keeping this standalone button for it too
-					     would just be two controls doing the same job side by side. -->
-					{#if isOnline && deliveryCtx.marketplace && buyer?.name}
-						<ssk-button
-							size="sm"
-							variant="ghost"
-							on:click={openAddShippingPile}
-							data-testid="sales.online.pile.add"
-						>
-							<ssk-icon name="outline-plus" size="xs"></ssk-icon>
-							จัดส่งหลายที่อยู่
-						</ssk-button>
-					{/if}
 				</span>
 
 				{#if buyer?.name}
@@ -2305,20 +2274,41 @@
 							</span>
 						</div>
 					{:else}
-						<button
-							type="button"
-							class="dest-trigger"
-							on:click={openPaymentDrawer}
-							data-testid="sales.payment.open"
+						<ssk-dropdown
+							class="selector"
+							size="sm"
+							width="100%"
+							optionswidth="100%"
+							value={$orderData.paymentType}
+							aria-label="วิธีการชำระเงิน"
+							data-testid="sales.payment.select"
 						>
-							<ssk-icon name="outline-credit-card" size="sm" themeColor="primary"></ssk-icon>
-							<span class="dest-trigger-value" class:placeholder={paymentMissing}>
-								{paymentMissing
-									? 'เลือกวิธีการชำระเงิน'
-									: getLabelFromValue($orderData.paymentType, 'paymentMethods')}
-							</span>
-							<ssk-icon name="solid-chevron-right" size="xs" themeColor="stroke"></ssk-icon>
-						</button>
+							<ssk-dropdown-button slot="selected" value={$orderData.paymentType}>
+								<span class="selector-body">
+									<ssk-icon
+										name={onlinePaymentOption?.icon ?? 'outline-credit-card'}
+										size="md"
+										themeColor="primary"
+									></ssk-icon>
+									<span class="selector-title" class:placeholder={paymentMissing}>
+										{paymentMissing ? 'เลือกวิธีการชำระเงิน' : paymentLabel($orderData.paymentType)}
+									</span>
+								</span>
+							</ssk-dropdown-button>
+							{#each onlinePaymentOptions as option}
+								<ssk-dropdown-option
+									value={option.value}
+									aria-selected={option.value === $orderData.paymentType}
+									on:click={() => setPaymentType(option.value)}
+									data-testid={`sales.payment.option.${option.value}`}
+								>
+									<span class="option-body">
+										<ssk-icon name={option.icon} size="sm" themeColor="stroke"></ssk-icon>
+										<span class="selector-title">{option.label}</span>
+									</span>
+								</ssk-dropdown-option>
+							{/each}
+						</ssk-dropdown>
 					{/if}
 				</div>
 			{/if}
@@ -2329,7 +2319,7 @@
 			     exists for ANY reason, CartFulfilmentPiles shows every bucket as a badge pile
 			     with its own gear icon and these rows stop showing (isSingleBucket), so there
 			     is never a second, independently-resolved entry point into the same settings. -->
-			{#if isSingleBucket && hasPickupLater}
+			{#if soleKind === DeliveryGroupKind.PickupLater}
 				<div class="field">
 					<span class="field-label">สาขาที่รับ</span>
 					<!-- Single bucket means this is the one and only รับภายหลัง pile, so — same
@@ -2378,7 +2368,7 @@
 				</div>
 			{/if}
 
-			{#if isSingleBucket && hasShip}
+			{#if soleKind === DeliveryGroupKind.Shipping}
 				<div class="field">
 					<span class="field-label">
 						ข้อมูลการจัดส่ง{#if shipInfoMissing}<span
@@ -2406,7 +2396,7 @@
 				</div>
 			{/if}
 
-			{#if isSingleBucket && hasOnSite}
+			{#if soleKind === DeliveryGroupKind.OnSite}
 				<div class="field">
 					<span class="field-label">
 						ข้อมูลการจัดส่ง{#if onSiteInfoMissing}<span class="required">*</span>{/if}
@@ -2552,9 +2542,11 @@
 <div class={`cart-item${cartList.length > 0 ? '' : '-no-scroll'}`}>
 	{#if cartList.length > 0}
 		<CartFulfilmentPiles
+			bind:bucketCount={pileBucketCount}
+			bind:soleKind={pileSoleKind}
 			items={cartList}
 			saleDefaultKind={physicalKindFor(fullfilmentType, isDelivery)}
-			lineCtx={{ channel: deliveryCtx.channel, marketplace: !!deliveryCtx.marketplace }}
+			lineCtx={{ channel: deliveryCtx.channel, marketplace: false }}
 			honourReceiveMode={allowPartialReceive && isDelivery}
 			openPiles={isPos ? $openFulfilmentPiles : isOnline ? onlineOpenPiles : []}
 			{branches}
@@ -2875,6 +2867,10 @@
 		white-space: nowrap;
 		font-size: var(--ssk-font-size-sm);
 		color: var(--ssk-colors-gray-800);
+	}
+
+	.selector-title.placeholder {
+		color: var(--ssk-colors-gray-400);
 	}
 
 	.dest-trigger.static {

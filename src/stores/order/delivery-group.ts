@@ -2,7 +2,6 @@ import { derived, get, writable } from 'svelte/store';
 import type { TCartItem } from '$stores/cart';
 import { orderData, setDelivery } from '$stores/order/order';
 import { FullfilmentType, type Delivery } from '$lib/entities/order/order';
-import { isMultiParcelEnabled } from '$lib/feature-flags';
 import {
 	BASIC_CATEGORY_ORDER,
 	DeliveryGroupKind,
@@ -211,7 +210,10 @@ function syncBasicGroups(items: TCartItem[], ctx: Parameters<typeof syncDelivery
 
 	const channel: LineFulfilmentCtx['channel'] = ctx.channel ?? 'pos';
 	const marketplace = ctx.marketplace ?? isMarketplaceChannel(ctx.subChannel);
-	const lineCtx: LineFulfilmentCtx = { channel, marketplace };
+	// A marketplace sale picks รูปแบบการรับสินค้า like any other online sale (PO) — the
+	// platform only decides how a Shipping group ships (courier "ตามแพลตฟอร์ม", below),
+	// never which kinds a line may sit in.
+	const lineCtx: LineFulfilmentCtx = { channel, marketplace: false };
 	// The category the sale is collected through by default — also what resolveLineKind
 	// falls back to for a line that has no explicit pick of its own.
 	const saleDefaultKind = physicalKindFor(ctx.fulfilmentType, ctx.isDelivery);
@@ -451,17 +453,16 @@ export function syncDeliveryGroups(
 		shippingAddresses?: { addressId: string; recipientName?: string; recipientAddress?: string }[];
 	}
 ): void {
-	// No backend actually emails a digital parcel yet — the cart's own promise
-	// ("ส่งทางอีเมลทันทีหลังชำระเงิน") and the pay gate it builds are premature until one
-	// does. Disabled behaves exactly like the empty-cart case below: no groups means no
-	// badges, no การจัดส่ง row, no drawer, no fee row and no gate, and
-	// commitDeliveryGroupsToOrder is already a no-op on an empty list. See feature-flags.ts.
-	if (!isMultiParcelEnabled()) {
-		deliveryGroups.set([]);
-		lastSyncedBuyerAddress = undefined;
-		return;
-	}
-
+	// VITE_DISABLE_MULTI_PARCEL only ever meant "no backend support for emailing a digital
+	// parcel yet" — it was never meant to collapse the cart down to a single fulfilment
+	// kind. CartFulfilmentPiles already draws one bucket per kind present in the cart
+	// (resolveLineKind/computeKindBuckets) and lets the cashier open extra piles via
+	// "+เพิ่มตัวเลือกรับสินค้า" regardless of this flag, so the groups syncBasicGroups builds
+	// must always match those buckets 1:1 — a flag-specific group set here just means the
+	// drawer save lookups (shippingGroupFor/pickupLaterGroupFor/onSiteGroup/digitalGroup in
+	// Cart.svelte) find no group to write into, and the pile stays "ข้อมูลไม่ครบ" forever.
+	// Build the real per-kind groups unconditionally; the flag now only decides whether
+	// Cart.svelte's customerRequired insists on a customer for these groups.
 	syncBasicGroups(items, ctx);
 }
 

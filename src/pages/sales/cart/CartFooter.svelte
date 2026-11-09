@@ -577,9 +577,9 @@
 	// $showDeliveryDetail stays false for it (needs 2+ groups or Digital/OnSite), which
 	// was leaving this reading the stale order-level $shippingFee (only ever synced into
 	// $orderData at checkout via commitDeliveryGroupsToOrder) instead — the fee looked
-	// like it never saved. $deliveryGroups is only ever empty when multi-parcel is off
-	// (VITE_DISABLE_MULTI_PARCEL, staging/production today) or the cart itself is, both
-	// cases where $shippingFee is correctly the only real source left.
+	// like it never saved. $deliveryGroups is only ever empty when the cart itself is (a
+	// plain pickup-now sale with nothing to split it also builds no groups, see
+	// syncDeliveryGroups) — $shippingFee is correctly the only real source left then.
 	$: grandTotal = summary + ($deliveryGroups.length > 0 ? $deliverySummary.totalFee : $shippingFee);
 
 	function toggleClearCartModal() {
@@ -1634,7 +1634,7 @@
 					isProcessing ||
 					(isOnline && !isBuyerValid) ||
 					isPaymentMissing ||
-					($showDeliveryDetail && $deliverySummary.missing.length > 0)}
+					$deliverySummary.missing.length > 0}
 				on:click={_onClickOnlineSave}
 			>
 				บันทึก
@@ -1646,7 +1646,7 @@
 					isError ||
 					isProcessing ||
 					(isDeliveryLater && !isBuyerValid) ||
-					($showDeliveryDetail && $deliverySummary.missing.length > 0)}
+					$deliverySummary.missing.length > 0}
 				on:click={_onClickPayment}
 			>
 				<ssk-i18n-translate
