@@ -126,6 +126,8 @@
 	// a code already names itself as the reason, see applyDiscount/makeOrder).
 	var reason: string | undefined = undefined;
 	var draftReason: string | undefined = undefined;
+	// Free text typed under the "อื่นๆ" chip — only read while draftReason is OTHER_REASON.
+	var draftOtherReason = '';
 	// Which of the 3 sections the modal is showing. Separate from `dType`/`draftDType`
 	// (percentage/fixed only) because `coupon` isn't a discount TYPE at all — it is a
 	// different way to arrive at one, and resolving a code still writes its type/value
@@ -247,8 +249,13 @@
 		'สินค้ามีตำหนิ',
 		'ปรับตามราคาคู่แข่ง',
 		'ของขวัญสะสมแต้ม',
-		'วันเกิดลูกค้า'
+		'วันเกิดลูกค้า',
+		'อื่นๆ'
 	];
+	// "อื่นๆ" opens a free-text field; the committed reason is that text (falls back to
+	// "อื่นๆ" itself when left blank).
+	const OTHER_REASON = 'อื่นๆ';
+	const OTHER_REASON_MAX = 100;
 
 	// Tapping the already-picked reason again clears it — same "pick or unpick" rule
 	// the quick-amount chips already use (class:active + re-tap), not a radiogroup.
@@ -348,7 +355,14 @@
 		draftValue = value;
 		draftError = isError;
 		draftCode = discountCode;
-		draftReason = reason;
+		// A committed reason that isn't one of the presets was typed under "อื่นๆ".
+		if (reason && !REASON_OPTIONS.includes(reason)) {
+			draftReason = OTHER_REASON;
+			draftOtherReason = reason;
+		} else {
+			draftReason = reason;
+			draftOtherReason = '';
+		}
 		// A committed code lands back on the coupon tab (that's how it got here); a
 		// committed reason or a plain amount lands on whichever type it actually is.
 		draftTab = discountCode ? 'coupon' : dType;
@@ -433,7 +447,11 @@
 		// A code already names itself as the reason (see makeOrder) — a reason from the
 		// percent/amount tabs must not ride along once the coupon tab is what actually
 		// committed.
-		reason = discountCode ? undefined : draftReason;
+		reason = discountCode
+			? undefined
+			: draftReason === OTHER_REASON
+				? draftOtherReason.trim().slice(0, OTHER_REASON_MAX) || OTHER_REASON
+				: draftReason;
 		isError = false;
 		showDiscountModal = false;
 	};
@@ -442,6 +460,7 @@
 		draftValue = '';
 		draftError = false;
 		draftReason = undefined;
+		draftOtherReason = '';
 		clearDraftCode();
 		codeInput = '';
 	};
@@ -1209,6 +1228,20 @@
 						</button>
 					{/each}
 				</div>
+				{#if draftReason === OTHER_REASON}
+					<div class="other-reason">
+						<textarea
+							class="other-reason-input"
+							rows="2"
+							maxlength={OTHER_REASON_MAX}
+							placeholder="ระบุเหตุผล"
+							aria-label="ระบุเหตุผลอื่นๆ"
+							bind:value={draftOtherReason}
+							data-testid="sales.cart.discount.reason.other.input"
+						/>
+						<span class="other-reason-count">{draftOtherReason.length}/{OTHER_REASON_MAX}</span>
+					</div>
+				{/if}
 			</div>
 		{/if}
 		</div>
@@ -2105,6 +2138,36 @@
 		background: var(--ssk-colors-primary-50, #fdf0ea);
 		color: var(--ssk-colors-primary-500);
 		font-weight: 600;
+	}
+
+	.other-reason {
+		display: grid;
+		gap: 0.25rem;
+	}
+
+	.other-reason-input {
+		width: 100%;
+		box-sizing: border-box;
+		font-family: inherit;
+		font-size: var(--ssk-font-size-sm);
+		color: var(--ssk-colors-gray-900);
+		border: 1px solid var(--ssk-colors-gray-200);
+		border-radius: 0.5rem;
+		padding: 0.5rem 0.75rem;
+		resize: vertical;
+		min-height: 2.75rem;
+	}
+
+	.other-reason-input:focus {
+		outline: none;
+		border-color: #1b8bf5;
+		box-shadow: 0 0 0 3px #bce8ff;
+	}
+
+	.other-reason-count {
+		justify-self: end;
+		font-size: var(--ssk-font-size-xs);
+		color: var(--ssk-colors-gray-500);
 	}
 
 	.discount-breakdown {
