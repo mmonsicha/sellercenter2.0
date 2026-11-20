@@ -20,6 +20,7 @@
 		type Oms2OrderRow
 	} from '$lib/entities/order/oms2-order-list';
 	import {
+		CHANNEL_GROUP_ICON,
 		channelGroupTheme,
 		fulfillmentBadges,
 		stockKey,
@@ -67,7 +68,7 @@
 		'minmax(170px, 1fr)', // serial — smaller text now
 		'minmax(140px, 1fr)',
 		'minmax(190px, 1fr)', // channel badge, one line (e.g. "หน้าร้าน สาขาสยาม")
-		'minmax(230px, 1fr)',
+		'minmax(270px, 1fr)', // fulfillment pills + toggle (longest: จัดส่งเข้าระบบ (ดิจิทัล))
 		'minmax(120px, 1fr)',
 		'minmax(190px, 1fr)', // payment badge, one line (e.g. "รอเก็บเงินปลายทาง")
 		'minmax(140px, 1fr)', // stock badge
@@ -341,7 +342,19 @@
 						size="md"
 						themecolor={channelGroupTheme(order.channel.group)}
 						data-testid={`orders.table-cell.sales-chanel.row.${idx}`}
-						><span>{order.channel.name}</span></ssk-badge
+						><span class="channel-label"
+							>{#if order.channel.logo}<img
+									class="channel-logo"
+									src={order.channel.logo}
+									alt=""
+									width="14"
+									height="14"
+								/>{:else}<ssk-icon
+									name={CHANNEL_GROUP_ICON[order.channel.group]}
+									size="xs"
+									color="currentcolor"
+								></ssk-icon>{/if}{order.channel.name}</span
+						></ssk-badge
 					>
 				</ssk-table-cell>
 
@@ -623,7 +636,7 @@
 
 	.table-scroll > ssk-dynamic-table {
 		display: block;
-		min-width: 1660px;
+		min-width: 1700px;
 	}
 
 	/* ssk-badge sets white-space:normal inside its shadow root, so nowrap on the host is
@@ -635,6 +648,18 @@
 
 	/* Fulfillment pills — same language as the role badges in user management:
 	   outlined pill, circular icon(s) on the left, round action button beside it. */
+	.channel-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+	}
+	.channel-logo {
+		width: 14px;
+		height: 14px;
+		object-fit: contain;
+		flex-shrink: 0;
+	}
+
 	.fulfill-wrap {
 		display: flex;
 		align-items: center;

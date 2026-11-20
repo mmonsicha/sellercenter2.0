@@ -17,13 +17,35 @@ import {
 	type Oms2OrderRow
 } from '$lib/entities/order/oms2-order-list';
 
+// Every channel the sale page can produce: POS (per branch), ออนไลน์ × each sub-channel
+// in `salesChannels` (order.ts — same labels + logos), and ลิงก์ (Link Bill).
+const LOGO = '/images/sales-channel';
+const online = (id: string, name: string, logo?: string): Oms2Channel => ({
+	id: `ch-${id}`,
+	name,
+	group: ChannelGroup.Online,
+	logo: logo ? `${LOGO}/${logo}` : undefined
+});
 const CH: Record<string, Oms2Channel> = {
-	pos: { id: 'ch-pos', name: 'หน้าร้าน สาขาสยาม', group: ChannelGroup.Store },
-	shopee: { id: 'ch-shopee', name: 'Shopee', group: ChannelGroup.Online },
-	lazada: { id: 'ch-lazada', name: 'Lazada', group: ChannelGroup.Online },
-	line: { id: 'ch-line', name: 'LINE OA', group: ChannelGroup.Link },
-	web: { id: 'ch-web', name: 'เว็บไซต์', group: ChannelGroup.Online }
+	pos: { id: 'ch-pos-siam', name: 'POS สาขาสยาม', group: ChannelGroup.Store },
+	posAri: { id: 'ch-pos-ari', name: 'POS สาขาอารีย์', group: ChannelGroup.Store },
+	line: online('line', 'LINE', 'Line.svg'),
+	web: online('facebook', 'Facebook', 'Facebook.svg'),
+	instagram: online('instagram', 'Instagram', 'Instagram.svg'),
+	shopee: online('shopee', 'Shopee', 'Shopee.svg'),
+	lazada: online('lazada', 'Lazada', 'Lazada.svg'),
+	tiktok: online('tiktok', 'TikTok Shop', 'TiktokShop.svg'),
+	lineShopping: online('lineShopping', 'LINE SHOPPING', 'LineShopping.svg'),
+	openApi: online('openApi', 'Open-API', 'Api.svg'),
+	onlineUnknown: online('online-unknown', 'ออนไลน์ (ไม่ระบุ)'),
+	link: { id: 'ch-link', name: 'ลิงก์', group: ChannelGroup.Link }
 };
+
+const F = FulfillmentType;
+const P = Oms2PaymentStatus;
+const S = Oms2OrderStatus;
+const K = StockState;
+const A = Oms2RowAction;
 
 const day = (n: number) => new Date(Date.UTC(2026, 10, 20 - n, 3, 15)).toISOString();
 const pay = (id: string, amount: number, method: string, status: Oms2PaymentStatus, d: number) => ({
@@ -198,6 +220,255 @@ const SEEDS: Seed[] = [
 		daysAgo: 7
 	}
 ];
+
+// Coverage set for PO review: every channel × every fulfilment combination the sale
+// page allows (POS: all 5 + partial receive; ออนไลน์: ship/digital/service mixes;
+// ลิงก์: ship/digital/pickup-later). Kept to statuses that don't disturb the
+// targeted cases above (one unknown, one COD-pending, refund tab = o5 + o8).
+type Extra = [
+	n: number,
+	customer: string,
+	channel: Oms2Channel,
+	types: FulfillmentType[],
+	groups: number,
+	total: number,
+	payment: Oms2PaymentStatus,
+	status: Oms2OrderStatus,
+	stock: StockState,
+	action: Oms2RowAction,
+	daysAgo: number
+];
+const EXTRAS: Extra[] = [
+	// POS — single methods
+	[
+		12,
+		'ศิริพร แก้วใส',
+		CH.posAri,
+		[F.PickupLater],
+		0,
+		1590,
+		P.Unpaid,
+		S.Created,
+		K.Reserved,
+		A.RecordPayment,
+		0
+	],
+	[
+		13,
+		'วีระ ทองดี',
+		CH.pos,
+		[F.Shipping],
+		1,
+		2890,
+		P.Paid,
+		S.ReadyToDeliver,
+		K.Deducted,
+		A.View,
+		1
+	],
+	[14, 'ร้านกาแฟบ้านสวน', CH.posAri, [F.Service], 0, 3500, P.Paid, S.Confirmed, K.None, A.View, 1],
+	[15, 'ณัฐวุฒิ ใจกว้าง', CH.pos, [F.Digital], 0, 499, P.Paid, S.Completed, K.None, A.View, 2],
+	[
+		16,
+		'บริษัท สยามเทค จำกัด',
+		CH.pos,
+		[F.Shipping],
+		4,
+		18900,
+		P.PartiallyPaid,
+		S.Preparing,
+		K.Partial,
+		A.RecordPayment,
+		2
+	],
+	// POS — mixes (partial receive / digital split / service)
+	[
+		17,
+		'ปิยะนุช รุ่งเรือง',
+		CH.pos,
+		[F.PickupNow, F.Digital],
+		0,
+		2190,
+		P.Paid,
+		S.Completed,
+		K.Deducted,
+		A.View,
+		3
+	],
+	[
+		18,
+		'อรุณ สว่างจิต',
+		CH.posAri,
+		[F.PickupNow, F.Service],
+		0,
+		5400,
+		P.PartiallyPaid,
+		S.Preparing,
+		K.Deducted,
+		A.RecordPayment,
+		3
+	],
+	[
+		19,
+		'กมล ศรีงาม',
+		CH.pos,
+		[F.PickupNow, F.Shipping],
+		1,
+		3250,
+		P.Paid,
+		S.Delivering,
+		K.Deducted,
+		A.View,
+		4
+	],
+	[
+		20,
+		'สุภาวดี มีสุข',
+		CH.posAri,
+		[F.PickupNow, F.PickupLater],
+		0,
+		1780,
+		P.Paid,
+		S.ReadyToDeliver,
+		K.Reserved,
+		A.View,
+		4
+	],
+	[
+		21,
+		'ร้านวัสดุเจริญ',
+		CH.pos,
+		[F.PickupNow, F.PickupLater, F.Shipping, F.Digital, F.Service],
+		2,
+		24750,
+		P.PartiallyPaid,
+		S.Preparing,
+		K.Partial,
+		A.RecordPayment,
+		5
+	],
+	// ออนไลน์ — every sub-channel
+	[
+		22,
+		'May Studio',
+		CH.instagram,
+		[F.Shipping, F.Digital],
+		1,
+		1650,
+		P.Paid,
+		S.Delivering,
+		K.Deducted,
+		A.View,
+		1
+	],
+	[23, 'ธีรพงษ์ ขยัน', CH.tiktok, [F.Shipping], 1, 890, P.Paid, S.Delivered, K.Deducted, A.View, 2],
+	[
+		24,
+		'ชลธิชา บุญมา',
+		CH.lineShopping,
+		[F.Shipping, F.Digital],
+		2,
+		3120,
+		P.PendingReview,
+		S.Confirmed,
+		K.Reserved,
+		A.ReviewSlip,
+		2
+	],
+	[25, 'Partner API #12', CH.openApi, [F.Digital], 0, 299, P.Paid, S.Completed, K.None, A.View, 3],
+	[
+		26,
+		'คุณเอ (ไม่ระบุช่องทาง)',
+		CH.onlineUnknown,
+		[F.Shipping, F.Service],
+		1,
+		4200,
+		P.Unpaid,
+		S.Created,
+		K.Reserved,
+		A.RecordPayment,
+		3
+	],
+	[
+		27,
+		'จิราพร วงศ์ใหญ่',
+		CH.web,
+		[F.Shipping],
+		3,
+		6780,
+		P.Paid,
+		S.Preparing,
+		K.Reserved,
+		A.View,
+		4
+	],
+	[28, 'ภาณุ แสงทอง', CH.line, [F.Service], 0, 2500, P.Paid, S.Confirmed, K.None, A.View, 5],
+	// ลิงก์ (Link Bill)
+	[
+		29,
+		'ลูกค้าลิงก์ 0812',
+		CH.link,
+		[F.Shipping],
+		1,
+		1350,
+		P.Unpaid,
+		S.Created,
+		K.Reserved,
+		A.RecordPayment,
+		0
+	],
+	[30, 'สมหญิง ดีใจ', CH.link, [F.Digital], 0, 199, P.Paid, S.Completed, K.None, A.View, 1],
+	[
+		31,
+		'ครัวคุณแม่',
+		CH.link,
+		[F.Shipping, F.PickupLater],
+		1,
+		2760,
+		P.Paid,
+		S.ReadyToDeliver,
+		K.Reserved,
+		A.View,
+		2
+	]
+];
+
+const extraSeed = ([
+	n,
+	customer,
+	channel,
+	types,
+	groups,
+	total,
+	payment,
+	status,
+	stock,
+	action,
+	daysAgo
+]: Extra): Seed => {
+	const paid = payment === P.Paid ? total : payment === P.PartiallyPaid ? Math.round(total / 2) : 0;
+	return {
+		id: `o${n}`,
+		serial: `SO-2611-${String(n).padStart(4, '0')}`,
+		customerName: customer,
+		channel,
+		total,
+		paymentStatus: payment,
+		status,
+		fulfillment: { types, shippingGroups: groups },
+		stock,
+		actions: [action],
+		payments:
+			payment === P.PendingReview
+				? [pay(`p${n}`, total, 'transfer', P.PendingReview, daysAgo)]
+				: paid
+					? [pay(`p${n}`, paid, n % 2 ? 'transfer' : 'cash', P.Paid, daysAgo)]
+					: [],
+		daysAgo
+	};
+};
+
+SEEDS.push(...EXTRAS.map(extraSeed));
 
 export const MOCK_OMS2_ORDERS: Oms2OrderRow[] = SEEDS.map(({ daysAgo, ...r }) => ({
 	...r,

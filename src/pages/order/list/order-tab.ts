@@ -155,3 +155,10 @@ export const fulfillmentBadges = (f: Oms2Fulfillment): FulfillmentBadge[] =>
 		key: `oms.order.fulfillment.${type}`,
 		groups: type === FulfillmentType.Shipping && f.shippingGroups > 1 ? f.shippingGroups : undefined
 	}));
+
+// Same icons as the sale page channel switcher (Cart.svelte channel options).
+export const CHANNEL_GROUP_ICON: Record<ChannelGroup, string> = {
+	[ChannelGroup.Store]: 'outline-building-storefront',
+	[ChannelGroup.Online]: 'outline-globe-alt',
+	[ChannelGroup.Link]: 'outline-link'
+};

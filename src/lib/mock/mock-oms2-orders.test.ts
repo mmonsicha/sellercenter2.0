@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	ChannelGroup,
 	FulfillmentType,
 	Oms2OrderStatus,
 	Oms2PaymentStatus,
@@ -37,14 +38,18 @@ describe('queryOms2Orders', () => {
 
 	it('fulfillment filter matches any type on multi-method orders', () => {
 		const r = queryOms2Orders({ ...base, fulfillments: [FulfillmentType.Digital] });
-		expect(r.rows.map((o) => o.id).sort()).toEqual(['o4', 'o6']);
+		expect(r.rows.length).toBeGreaterThan(1);
+		expect(r.rows.every((o) => o.fulfillment.types.includes(FulfillmentType.Digital))).toBe(true);
+		expect(r.rows.map((o) => o.id)).toEqual(expect.arrayContaining(['o4', 'o6']));
 	});
 
 	it('paginates and sorts', () => {
+		const total = MOCK_OMS2_ORDERS.length;
+		const lastPage = Math.ceil(total / 5);
 		const p1 = queryOms2Orders({ ...base, rows: 5, sort: 'asc' });
-		const p3 = queryOms2Orders({ ...base, rows: 5, page: 3, sort: 'asc' });
+		const pLast = queryOms2Orders({ ...base, rows: 5, page: lastPage, sort: 'asc' });
 		expect(p1.rows).toHaveLength(5);
-		expect(p3.rows).toHaveLength(1);
+		expect(pLast.rows).toHaveLength(total - (lastPage - 1) * 5);
 		expect(p1.rows[0].createdAt <= p1.rows[1].createdAt).toBe(true);
 	});
 
@@ -53,8 +58,42 @@ describe('queryOms2Orders', () => {
 		expect(queryOms2Orders({ ...base, search: 'kanda' }).total).toBe(1);
 	});
 
-	it('channels come from data', () => {
-		expect(mockOms2Channels().length).toBe(5);
+	it('channels come from data and cover the sale page channels', () => {
+		const ch = mockOms2Channels();
+		// POS (2 branches) + 9 online sub-channels + ลิงก์
+		expect(ch.length).toBe(12);
+		expect(new Set(ch.map((c) => c.group))).toEqual(
+			new Set([ChannelGroup.Store, ChannelGroup.Online, ChannelGroup.Link])
+		);
+		expect(ch.filter((c) => c.group === ChannelGroup.Online && c.logo).length).toBe(8);
+	});
+});
+
+describe('PO coverage set', () => {
+	const all = MOCK_OMS2_ORDERS;
+
+	it('every fulfillment type appears alone and in a mix', () => {
+		for (const t of Object.values(FulfillmentType)) {
+			expect(
+				all.some((o) => o.fulfillment.types.length === 1 && o.fulfillment.types[0] === t)
+			).toBe(true);
+			expect(
+				all.some((o) => o.fulfillment.types.length > 1 && o.fulfillment.types.includes(t))
+			).toBe(true);
+		}
+		expect(all.some((o) => o.fulfillment.types.length === 5)).toBe(true);
+	});
+
+	it('every channel group carries a multi-method order', () => {
+		for (const g of Object.values(ChannelGroup))
+			expect(all.some((o) => o.channel.group === g && o.fulfillment.types.length > 1)).toBe(true);
+	});
+
+	it('every order and payment status appears', () => {
+		for (const s of Object.values(Oms2OrderStatus))
+			expect(all.some((o) => o.status === s)).toBe(true);
+		for (const p of Object.values(Oms2PaymentStatus))
+			expect(all.some((o) => o.paymentStatus === p)).toBe(true);
 	});
 });
 

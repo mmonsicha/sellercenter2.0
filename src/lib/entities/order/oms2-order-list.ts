@@ -37,13 +37,17 @@ export enum Oms2Tab {
 	Cancelled = 'cancelled'
 }
 
-// Badge colour group only — the channel NAME always comes from data, never hardcoded.
+// Mirrors the sale page's 3 channels (SaleChannelUI: POS / ONLINE / LINK_BILL).
+// Drives badge colour + icon only — the channel NAME always comes from data.
 export enum ChannelGroup {
-	Store = 'store', // POS / หน้าร้าน
-	Online = 'online', // marketplace, social, web
-	Link = 'link' // link bill / chat commerce
+	Store = 'store', // POS (หน้าร้าน) — one channel per branch
+	Online = 'online', // ออนไลน์ — sub-channel: LINE, Facebook, Shopee, TikTok Shop ...
+	Link = 'link' // ลิงก์ (Link Bill)
 }
 
+// Mirrors the sale page's fulfilment kinds (FullfilmentType / DeliveryGroupKind):
+// PickupNow=PickupImmediate|PickupInStore, PickupLater, Shipping=ShopDelivery,
+// Digital=DigitalDelivery, Service=OnSite.
 export enum FulfillmentType {
 	PickupNow = 'pickup_now',
 	PickupLater = 'pickup_later',
@@ -71,6 +75,9 @@ export interface Oms2Channel {
 	id: string;
 	name: string;
 	group: ChannelGroup;
+	// Online sub-channel logo, same assets the sale page uses (salesChannels in order.ts,
+	// /images/sales-channel/*.svg). POS / ลิงก์ use the group icon instead.
+	logo?: string;
 }
 
 export interface Oms2Fulfillment {
