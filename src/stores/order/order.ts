@@ -93,7 +93,7 @@ export async function listOrder(
 	salesChannels: string[],
 	couriers: string[]
 ): Promise<void> {
-	const pFilter: Tasks | undefined = tasks.find((t) => (t.name = 'payment'));
+	const pFilter: Tasks | undefined = tasks.find((t) => t.name === 'payment');
 	orderList.update((o) => ({ ...o, loading: true }));
 
 	try {

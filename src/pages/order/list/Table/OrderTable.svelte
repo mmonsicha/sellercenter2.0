@@ -1,40 +1,35 @@
 <script lang="ts">
 	import BlankPage from '$components/BlankPage.svelte';
-	import LoadingPage from '$components/LoadingPage.svelte';
 
-	import { oFilter, setSorting, type Sort } from '$stores/order/filter';
-	import { orderList } from '$stores/order/order';
-	import { formatPrice } from '$utils/format-number';
-
-	import PaymentChannel from '$components/PaymentChannel.svelte';
-	import { currentLanguage } from '$stores/i18n';
 	import {
-		getBadgeOrderStatus,
-		deliveryMethodLabel,
-		getOrderRowAction,
-		orderDisplayStatus,
-		OrderRowActionKind,
-		slipStatusTheme,
-		totalShippingFee
-	} from '$utils/utils-order';
+		oFilter,
+		resetFilterOptions,
+		setIsClearSearchOrderFilter,
+		setSorting,
+		type Sort
+	} from '$stores/order/filter';
+	import { oms2OrderList } from '$stores/order/oms2-order-list';
+	import { formatPrice } from '$utils/format-number';
+	import { currentLanguage } from '$stores/i18n';
 	import type { I18nStore } from '@sellsuki-org/sellsuki-components';
 	import { getContext } from 'svelte';
-	import { SaleChannelType, salesChannels, type Order } from '$lib/entities/order/order';
-	import { PaymentMethod } from '$lib/entities/payment/payment-method';
 	import { navigate, useLocation } from 'svelte-routing';
-	import { SlipPaymentState } from '$lib/entities/payment/payment-transaction';
 	import {
-		slipStatusI18nKey,
-		paymentMethodI18nKey,
-		orderStatusI18nKey,
-		orderDeliveryI18nKey
-	} from '$utils/i18n-keys';
-	import { toPaymentTransaction } from '$service/payment-adapter';
-	import { withCompanyRef } from '$utils/file-url';
-	import { openSlipModal, SlipModalType, SlipModalMode } from '$stores/order/slip-modals';
-	import { currentCompany } from '$stores/company/current-company';
-	import { tryOpenRecordPaymentModal } from '$stores/payment/payment-transaction';
-	import { openDeliverModal } from '$stores/order/deliver-modal';
+		Oms2RowAction,
+		StockState,
+		type Oms2OrderRow
+	} from '$lib/entities/order/oms2-order-list';
+	import {
+		channelGroupTheme,
+		fulfillmentBadges,
+		stockKey,
+		stockTheme,
+		orderStatusKey,
+		orderStatusTheme,
+		paymentStatusKey,
+		paymentStatusTheme,
+		rowActionKey
+	} from '../order-tab';
 
 	const i18nStore = getContext<I18nStore>('i18n');
 	const location = useLocation();
@@ -43,20 +38,47 @@
 	export let rowsPerPage: number;
 
 	export let canManagePayment = false;
-	export let canUpdateOrder = false;
+	export let canUpdateOrder = false; // kept for API parity; no Deliver action in OMS 2.0
+	export let onRetry: () => void = () => {};
+
+	const SKELETON_ROWS = 8;
+	$: hasActiveFilter = !!$oFilter.search || $oFilter.total > 0;
+
+	function clearAllFilters() {
+		resetFilterOptions();
+		if ($oFilter.search) setIsClearSearchOrderFilter(true);
+	}
 
 	let sortDirection: Sort = 'desc';
 	let totalpages = 1;
 	let orderNotFound = '';
 
 	let expanded: Record<string, boolean> = {};
+	// Per-row "+N" fulfillment disclosure (tap to expand / collapse).
+	let fulfillOpen: Record<string, boolean> = {};
+	const toggleFulfill = (key: string) =>
+		(fulfillOpen = { ...fulfillOpen, [key]: !fulfillOpen[key] });
 
 	// Shared with the nested expanded-payment table so its columns align under the parent's.
-	const COLS = ['48px', '260px', '1.2fr', '1.4fr', '1fr', '1.4fr', '1.1fr', '1.4fr', '1fr'];
+	// expand | serial | customer | channel | fulfillment | total | payment | stock | created | status | action
+	// Fixed minimums so badges never wrap mid-word; the wrapper scrolls on narrow screens.
+	const COLS = [
+		'48px',
+		'minmax(170px, 1fr)', // serial — smaller text now
+		'minmax(140px, 1fr)',
+		'minmax(190px, 1fr)', // channel badge, one line (e.g. "หน้าร้าน สาขาสยาม")
+		'minmax(230px, 1fr)',
+		'minmax(120px, 1fr)',
+		'minmax(190px, 1fr)', // payment badge, one line (e.g. "รอเก็บเงินปลายทาง")
+		'minmax(140px, 1fr)', // stock badge
+		'minmax(130px, 1fr)',
+		'minmax(150px, 1fr)',
+		'minmax(150px, 1fr)'
+	];
 
 	$: if ($oFilter) sortDirection = $oFilter.sort ?? 'desc';
 
-	$: totalpages = Math.ceil($orderList.totalCount?.total! / rowsPerPage);
+	$: totalpages = Math.max(1, Math.ceil($oms2OrderList.total / rowsPerPage));
 
 	function handleSortChange(event: CustomEvent) {
 		sortDirection = event.detail.sortDirection;
@@ -66,6 +88,7 @@
 	function handlePageChange(event: CustomEvent) {
 		currentPage = event.detail.page;
 		expanded = {}; // collapse all when navigating to another page
+		fulfillOpen = {};
 	}
 
 	function handleRowPerPageChange(event: CustomEvent) {
@@ -85,8 +108,6 @@
 
 	const toggleExpand = (key: string) => (expanded = { ...expanded, [key]: !expanded[key] });
 
-	const txnOf = (order: Order) => toPaymentTransaction(order);
-
 	const loadKeywords = async () => {
 		orderNotFound = await i18nStore.get(
 			'patona-sellercenter-myorder-subtitle-ordersfound',
@@ -99,443 +120,617 @@
 		loadKeywords();
 	}
 
-	async function handleRowAction(order: Order) {
-		const action = getOrderRowAction(order);
-		switch (action.kind) {
-			case OrderRowActionKind.Pay:
-			case OrderRowActionKind.PayMore: {
-				// false = legacy order (no SukiPay transaction) → fall back to detail page.
-				const handled = await tryOpenRecordPaymentModal(order);
-				if (!handled) onClickToViewOrder(order.orderId);
-				return;
-			}
-			case OrderRowActionKind.Deliver:
-				openDeliverModal(order);
-				return;
-			default:
-				onClickToViewOrder(order.orderId);
-		}
+	// Actions come from the BE (mocked). Everything but View needs payment.manage.
+	const primaryAction = (o: Oms2OrderRow): Oms2RowAction => o.actions[0] ?? Oms2RowAction.View;
+	const isBlocked = (a: Oms2RowAction) => a !== Oms2RowAction.View && !canManagePayment;
+
+	// API bypassed: payment/COD/slip modals need the full Order entity, which the mock
+	// list row doesn't carry. Until the real API lands every action opens the detail page.
+	function handleRowAction(order: Oms2OrderRow) {
+		onClickToViewOrder(order.id);
 	}
 </script>
 
-<ssk-dynamic-table height="100%" columnsWidth={COLS}>
-	{#if $orderList.loading}
-		<div class="table-placeholder" slot="placeholder">
-			<LoadingPage description="loading" height="60dvh" />
-		</div>
-	{:else if $orderList.totalCount?.total}
-		<ssk-header-cell slot="headers" align="left"></ssk-header-cell>
-		<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.order-number">
+{#if $oms2OrderList.loading}
+	<!-- Skeleton keeps the table's footprint so the page doesn't jump when data lands -->
+	<div class="state skeleton" aria-busy="true" data-testid="orders.table.skeleton">
+		{#each Array(SKELETON_ROWS) as _, i (i)}
+			<div class="skeleton-row">
+				<ssk-skeleton size="sm" width="24px"></ssk-skeleton>
+				<ssk-skeleton size="sm" width="140px"></ssk-skeleton>
+				<ssk-skeleton size="sm" width="120px"></ssk-skeleton>
+				<ssk-skeleton size="sm" width="90px"></ssk-skeleton>
+				<ssk-skeleton size="sm" width="110px"></ssk-skeleton>
+				<ssk-skeleton size="sm" width="70px"></ssk-skeleton>
+				<ssk-skeleton size="sm" width="100px"></ssk-skeleton>
+				<ssk-skeleton size="sm" width="90px"></ssk-skeleton>
+			</div>
+		{/each}
+	</div>
+{:else if $oms2OrderList.error}
+	<div class="state message" role="alert" data-testid="orders.table.error">
+		<ssk-icon name="outline-exclamation-circle" themecolor="error" size="xl"></ssk-icon>
+		<ssk-text size="lg" color="gray.800" fontweight="medium">
 			<ssk-i18n-translate
-				key="patona-sellercenter-myorder-table-header-salesorder"
+				key="oms.order.state.error_title"
 				lang={$currentLanguage.code}
 				fallbackLang="default"
 			/>
-		</ssk-header-cell>
-		<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.customer-name">
+		</ssk-text>
+		<ssk-text size="sm" color="gray.500">
 			<ssk-i18n-translate
-				key="patona-sellercenter-myorder-table-header-customername"
+				key="oms.order.state.error_desc"
 				lang={$currentLanguage.code}
 				fallbackLang="default"
 			/>
-		</ssk-header-cell>
-		<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.sales-chanel">
-			<ssk-i18n-translate
-				key="patona-sellercenter-myorder-table-header-saleschannel"
-				lang={$currentLanguage.code}
-				fallbackLang="default"
-			/>
-		</ssk-header-cell>
-		<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.total-price">
-			<ssk-i18n-translate
-				key="patona-sellercenter-myorder-table-header-totalamount"
-				lang={$currentLanguage.code}
-				fallbackLang="default"
-			/>
-		</ssk-header-cell>
-		<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.payment-status">
-			<ssk-i18n-translate
-				key="patona-sellercenter-myorder-table-header-paymentstatus"
-				lang={$currentLanguage.code}
-				fallbackLang="default"
-			/>
-		</ssk-header-cell>
-		<ssk-header-cell
-			slot="headers"
-			align="left"
-			sortable
-			{sortDirection}
-			on:sort-changed={handleSortChange}
-			data-testid="orders.table-header.date-created"
+		</ssk-text>
+		<ssk-button
+			variant="outline"
+			size="sm"
+			themeColor="primary"
+			on:click={onRetry}
+			data-testid="orders.table.retry"
 		>
 			<ssk-i18n-translate
-				key="patona-sellercenter-myorder-table-header-createddate"
+				key="oms.order.state.retry"
 				lang={$currentLanguage.code}
 				fallbackLang="default"
 			/>
-		</ssk-header-cell>
-		<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.order-status">
+		</ssk-button>
+	</div>
+{:else if !$oms2OrderList.total && hasActiveFilter}
+	<div class="state message" data-testid="orders.table.no-match">
+		<ssk-icon name="outline-funnel" themecolor="gray" size="xl"></ssk-icon>
+		<ssk-text size="lg" color="gray.800" fontweight="medium">
 			<ssk-i18n-translate
-				key="patona-sellercenter-myorder-table-header-orderstatus"
+				key="oms.order.state.no_match_title"
 				lang={$currentLanguage.code}
 				fallbackLang="default"
 			/>
-		</ssk-header-cell>
-		<ssk-header-cell slot="headers" align="left"></ssk-header-cell>
-
-		{#each $orderList.data ?? [] as order, idx (order.orderId ?? idx)}
-			{@const txn = txnOf(order)}
-			{@const rowKey = order.orderId ?? String(idx)}
-			{@const rowAction = getOrderRowAction(order)}
-			{@const actionBlocked =
-				((rowAction.kind === OrderRowActionKind.Pay ||
-					rowAction.kind === OrderRowActionKind.PayMore) &&
-					!canManagePayment) ||
-				(rowAction.kind === OrderRowActionKind.Deliver && !canUpdateOrder)}
-			<ssk-table-cell align="left">
-				{#if (txn?.payments?.length ?? 0) > 0}
-					<div
-						class="chevron"
-						on:click={() => toggleExpand(rowKey)}
-						data-testid={`orders.table-cell.expand.row.${idx}`}
-					>
-						<ssk-icon
-							name={expanded[rowKey] ? 'solid-chevron-up' : 'solid-chevron-down'}
-							themecolor="black"
-							size="lg"
-						></ssk-icon>
-					</div>
-				{/if}
-			</ssk-table-cell>
-
-			<!-- Order serial -->
-			<ssk-table-cell align="left">
-				<div
-					class="order-serial"
-					on:click={() => onClickToViewOrder(order.orderId)}
-					data-testid={`orders.table-cell.order-number.row.${idx}`}
-				>
-					<ssk-text color="currentcolor">{order.orderSerial}</ssk-text>
-				</div>
-				<div
-					class="copy-container"
-					on:click={() => onClickCopy(order.orderSerial)}
-					data-testid={`orders.table-cell.copy.row.${idx}`}
-				>
-					<ssk-icon name="outline-clipboard-document" themecolor="primary" size="lg"></ssk-icon>
-				</div>
-			</ssk-table-cell>
-
-			<!-- Customer name -->
-			<ssk-table-cell align="left" data-testid={`orders.table-cell.customer-name.row.${idx}`}>
-				<ssk-text color="stroke">{order.buyer.name} </ssk-text>
-			</ssk-table-cell>
-
-			<!-- Sales channel -->
-			<ssk-table-cell align="left">
-				<div>
-					<ssk-text color="stroke">
-						{#if order.saleChannel && order.saleChannel.type === SaleChannelType.Offline}
-							{@const deliveryKey = orderDeliveryI18nKey(order.saleChannel?.saleOrigin)}
-							{#if deliveryKey}
-								<ssk-i18n-translate
-									key={deliveryKey}
-									lang={$currentLanguage.code}
-									fallbackLang="default"
-								/>
-							{/if}
-						{:else}
-							{salesChannels.find((s) => s.value === order.saleChannel?.saleOrigin)?.label ?? '-'}
-						{/if}
-					</ssk-text>
-					{#if order.saleChannel && order.saleChannel.type === SaleChannelType.Online}
-						<ssk-text
-							size="xs"
-							color="stroke"
-							data-testid={`orders.table-cell.sales-chanel.row.${idx}`}
-						>
-							{deliveryMethodLabel(order)}
-						</ssk-text>
-					{/if}
-				</div>
-			</ssk-table-cell>
-
-			<!-- Total price -->
-			<ssk-table-cell align="left">
-				<div class="total-container">
-					<ssk-text color="stroke">฿</ssk-text>
-					<ssk-text
-						size="md"
-						color="gray.800"
-						data-testid={`orders.table-cell.total-price.row.${idx}`}
-						>{formatPrice(
-							(order.buyerStatement.netPrice ?? 0) + totalShippingFee(order)
-						)}</ssk-text
-					>
-				</div>
-			</ssk-table-cell>
-
-			<!-- Payment status -->
-			<ssk-table-cell align="left">
-				<PaymentChannel {order} testid={`orders.table-cell.payment-status.row.${idx}`} />
-			</ssk-table-cell>
-
-			<!-- Date created -->
-			<ssk-table-cell align="left">
-				<ssk-date-display
-					date={order.createdAt}
-					data-testid={`orders.table-cell.date-created.row.${idx}`}
+		</ssk-text>
+		<ssk-text size="sm" color="gray.500">
+			<ssk-i18n-translate
+				key="oms.order.state.no_match_desc"
+				lang={$currentLanguage.code}
+				fallbackLang="default"
+			/>
+		</ssk-text>
+		<ssk-button
+			variant="outline"
+			size="sm"
+			themeColor="primary"
+			on:click={clearAllFilters}
+			data-testid="orders.table.clear-filters"
+		>
+			<ssk-i18n-translate
+				key="patona-sellercenter-myorder-button-clearall"
+				lang={$currentLanguage.code}
+				fallbackLang="default"
+			/>
+		</ssk-button>
+	</div>
+{:else if !$oms2OrderList.total}
+	<div class="state" data-testid="orders.table.empty">
+		<BlankPage description={orderNotFound} height="60dvh" />
+	</div>
+{:else}
+	<!-- Horizontal scroll on tablet/mobile instead of crushing 11 columns -->
+	<div class="table-scroll">
+		<ssk-dynamic-table height="100%" columnsWidth={COLS}>
+			<ssk-header-cell slot="headers" align="left"></ssk-header-cell>
+			<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.order-number">
+				<ssk-i18n-translate
+					key="patona-sellercenter-myorder-table-header-salesorder"
+					lang={$currentLanguage.code}
+					fallbackLang="default"
 				/>
-			</ssk-table-cell>
+			</ssk-header-cell>
+			<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.customer-name">
+				<ssk-i18n-translate
+					key="patona-sellercenter-myorder-table-header-customername"
+					lang={$currentLanguage.code}
+					fallbackLang="default"
+				/>
+			</ssk-header-cell>
+			<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.sales-chanel">
+				<ssk-i18n-translate
+					key="patona-sellercenter-myorder-table-header-saleschannel"
+					lang={$currentLanguage.code}
+					fallbackLang="default"
+				/>
+			</ssk-header-cell>
+			<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.fulfillment">
+				<ssk-i18n-translate
+					key="oms.order.header.fulfillment"
+					lang={$currentLanguage.code}
+					fallbackLang="default"
+				/>
+			</ssk-header-cell>
+			<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.total-price">
+				<ssk-i18n-translate
+					key="patona-sellercenter-myorder-table-header-totalamount"
+					lang={$currentLanguage.code}
+					fallbackLang="default"
+				/>
+			</ssk-header-cell>
+			<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.payment-status">
+				<ssk-i18n-translate
+					key="patona-sellercenter-myorder-table-header-paymentstatus"
+					lang={$currentLanguage.code}
+					fallbackLang="default"
+				/>
+			</ssk-header-cell>
+			<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.stock">
+				<ssk-i18n-translate
+					key="oms.order.header.stock"
+					lang={$currentLanguage.code}
+					fallbackLang="default"
+				/>
+			</ssk-header-cell>
+			<ssk-header-cell
+				slot="headers"
+				align="left"
+				sortable
+				{sortDirection}
+				on:sort-changed={handleSortChange}
+				data-testid="orders.table-header.date-created"
+			>
+				<ssk-i18n-translate
+					key="patona-sellercenter-myorder-table-header-createddate"
+					lang={$currentLanguage.code}
+					fallbackLang="default"
+				/>
+			</ssk-header-cell>
+			<ssk-header-cell slot="headers" align="left" data-testid="orders.table-header.order-status">
+				<ssk-i18n-translate
+					key="patona-sellercenter-myorder-table-header-orderstatus"
+					lang={$currentLanguage.code}
+					fallbackLang="default"
+				/>
+			</ssk-header-cell>
+			<ssk-header-cell slot="headers" align="left"></ssk-header-cell>
 
-			<!-- Order status -->
-			<ssk-table-cell align="left">
-				<ssk-badge
-					variant="subtle"
-					size="md"
-					themecolor={getBadgeOrderStatus(orderDisplayStatus(order))}
-					data-testid={`orders.table-cell.order-status.row.${idx}`}
-				>
-					<ssk-i18n-translate
-						key={orderStatusI18nKey(orderDisplayStatus(order))}
-						lang={$currentLanguage.code}
-						fallbackLang="default"
+			{#each $oms2OrderList.rows as order, idx (order.id)}
+				{@const rowKey = order.id}
+				{@const action = primaryAction(order)}
+				{@const fBadges = fulfillmentBadges(order.fulfillment)}
+				{@const fOpen = !!fulfillOpen[rowKey]}
+				<ssk-table-cell align="left">
+					{#if order.payments.length > 0}
+						<div
+							class="chevron"
+							on:click={() => toggleExpand(rowKey)}
+							data-testid={`orders.table-cell.expand.row.${idx}`}
+						>
+							<ssk-icon
+								name={expanded[rowKey] ? 'solid-chevron-up' : 'solid-chevron-down'}
+								themecolor="black"
+								size="lg"
+							></ssk-icon>
+						</div>
+					{/if}
+				</ssk-table-cell>
+
+				<!-- Order serial -->
+				<ssk-table-cell align="left">
+					<div
+						class="order-serial"
+						on:click={() => onClickToViewOrder(order.id)}
+						data-testid={`orders.table-cell.order-number.row.${idx}`}
+					>
+						<ssk-text size="sm" color="currentcolor">{order.serial}</ssk-text>
+					</div>
+					<div
+						class="copy-container"
+						on:click={() => onClickCopy(order.serial)}
+						data-testid={`orders.table-cell.copy.row.${idx}`}
+					>
+						<ssk-icon name="outline-clipboard-document" themecolor="primary" size="lg"></ssk-icon>
+					</div>
+				</ssk-table-cell>
+
+				<!-- Customer name -->
+				<ssk-table-cell align="left" data-testid={`orders.table-cell.customer-name.row.${idx}`}>
+					<ssk-text color="stroke">{order.customerName}</ssk-text>
+				</ssk-table-cell>
+
+				<!-- Sales channel — badge colour by group, label always from data -->
+				<ssk-table-cell align="left">
+					<ssk-badge
+						variant="subtle"
+						size="md"
+						themecolor={channelGroupTheme(order.channel.group)}
+						data-testid={`orders.table-cell.sales-chanel.row.${idx}`}
+						><span>{order.channel.name}</span></ssk-badge
+					>
+				</ssk-table-cell>
+
+				<!-- Fulfillment — single type / หลายวิธี (N) / จัดส่งตามที่อยู่ (N กลุ่ม) -->
+				<!-- Pill style (like role badges): collapsed = one pill with stacked method icons
+				     + "หลายวิธี (N)"; round button beside it expands one pill per method. Tap only. -->
+				<ssk-table-cell align="left" data-testid={`orders.table-cell.fulfillment.row.${idx}`}>
+					{#if fBadges.length === 0}
+						<ssk-text color="stroke">—</ssk-text>
+					{:else}
+						<div class="fulfill-wrap" class:open={fOpen}>
+							{#if fBadges.length > 1 && !fOpen}
+								<span class="fulfill-pill" data-testid={`orders.fulfillment-summary.row.${idx}`}>
+									<span class="icon-stack">
+										{#each fBadges as b (b.type)}
+											<span class="icon-dot"
+												><ssk-icon name={b.icon} size="xs" color="gray.700"></ssk-icon></span
+											>
+										{/each}
+									</span>
+									<ssk-text size="sm" color="gray.800" fontweight="medium">
+										<ssk-i18n-translate
+											key="oms.order.fulfillment.multi"
+											lang={$currentLanguage.code}
+											fallbackLang="default"
+										/>
+										({fBadges.length})
+									</ssk-text>
+								</span>
+							{:else}
+								<div class="fulfill-pills">
+									{#each fBadges as b (b.type)}
+										<span
+											class="fulfill-pill"
+											data-testid={`orders.fulfillment-badge.row.${idx}.${b.type}`}
+										>
+											<span class="icon-dot"
+												><ssk-icon name={b.icon} size="xs" color="gray.700"></ssk-icon></span
+											>
+											<ssk-text size="sm" color="gray.800" fontweight="medium">
+												<ssk-i18n-translate
+													key={b.key}
+													lang={$currentLanguage.code}
+													fallbackLang="default"
+												/>
+												{#if b.groups}
+													({b.groups}&nbsp;<ssk-i18n-translate
+														key="oms.order.fulfillment.groups_unit"
+														lang={$currentLanguage.code}
+														fallbackLang="default"
+													/>)
+												{/if}
+											</ssk-text>
+										</span>
+									{/each}
+								</div>
+							{/if}
+							{#if fBadges.length > 1}
+								<button
+									type="button"
+									class="fulfill-toggle"
+									aria-expanded={fOpen}
+									aria-label={fOpen
+										? 'ย่อวิธีรับสินค้า'
+										: `ดูวิธีรับสินค้าทั้ง ${fBadges.length} วิธี`}
+									on:click={() => toggleFulfill(rowKey)}
+									data-testid={`orders.fulfillment-toggle.row.${idx}`}
+								>
+									<ssk-icon
+										name={fOpen ? 'outline-eye-slash' : 'outline-eye'}
+										size="sm"
+										color="gray.600"
+									></ssk-icon>
+								</button>
+							{/if}
+						</div>
+					{/if}
+				</ssk-table-cell>
+
+				<!-- Total price -->
+				<ssk-table-cell align="left">
+					<div class="total-container">
+						<ssk-text color="stroke">฿</ssk-text>
+						<ssk-text
+							size="md"
+							color="gray.800"
+							data-testid={`orders.table-cell.total-price.row.${idx}`}
+							>{formatPrice(order.total)}</ssk-text
+						>
+					</div>
+				</ssk-table-cell>
+
+				<!-- Payment status -->
+				<ssk-table-cell align="left">
+					<ssk-badge
+						variant="subtle"
+						size="md"
+						themecolor={paymentStatusTheme(order.paymentStatus)}
+						data-testid={`orders.table-cell.payment-status.row.${idx}`}
+					>
+						<ssk-i18n-translate
+							key={paymentStatusKey(order.paymentStatus)}
+							lang={$currentLanguage.code}
+							fallbackLang="default"
+						/>
+					</ssk-badge>
+				</ssk-table-cell>
+
+				<!-- Stock -->
+				<ssk-table-cell align="left" data-testid={`orders.table-cell.stock.row.${idx}`}>
+					{#if order.stock === StockState.None}
+						<ssk-text color="stroke">—</ssk-text>
+					{:else}
+						<ssk-badge variant="subtle" size="md" themecolor={stockTheme(order.stock)}>
+							<ssk-i18n-translate
+								key={stockKey(order.stock)}
+								lang={$currentLanguage.code}
+								fallbackLang="default"
+							/>
+						</ssk-badge>
+					{/if}
+				</ssk-table-cell>
+
+				<!-- Date created -->
+				<ssk-table-cell align="left">
+					<ssk-date-display
+						date={order.createdAt}
+						data-testid={`orders.table-cell.date-created.row.${idx}`}
 					/>
-				</ssk-badge>
-			</ssk-table-cell>
+				</ssk-table-cell>
 
-			<!-- Action cell -->
-			<ssk-table-cell align="left">
-				{#if actionBlocked}
-					<!-- Pay/PayMore lacks patona.order.payment.manage, or Deliver lacks
-					     patona.order.update → disabled + tooltip -->
-					<ssk-tooltip size="xs" themeColor="black" hideCloseButton={true} areaPosition="130%">
-						<span slot="content" class="tooltip-content">
-							<ssk-text size="xs" color="white">
+				<!-- Order status — straight from data -->
+				<ssk-table-cell align="left">
+					<ssk-badge
+						variant="subtle"
+						size="md"
+						themecolor={orderStatusTheme(order.status)}
+						data-testid={`orders.table-cell.order-status.row.${idx}`}
+					>
+						<ssk-i18n-translate
+							key={orderStatusKey(order.status)}
+							lang={$currentLanguage.code}
+							fallbackLang="default"
+						/>
+					</ssk-badge>
+				</ssk-table-cell>
+
+				<!-- Action cell -->
+				<ssk-table-cell align="left">
+					{#if isBlocked(action)}
+						<ssk-tooltip size="xs" themeColor="black" hideCloseButton={true} areaPosition="130%">
+							<span slot="content" class="tooltip-content">
+								<ssk-text size="xs" color="white">
+									<ssk-i18n-translate
+										key="common.permission.access_restricted"
+										lang={$currentLanguage.code}
+										fallbackLang="default"
+									/>
+								</ssk-text>
+							</span>
+							<ssk-button
+								variant="outline"
+								size="sm"
+								themeColor="primary"
+								disabled
+								data-testid={`orders.table-cell.action.row.${idx}`}
+							>
 								<ssk-i18n-translate
-									key="common.permission.access_restricted"
+									key={rowActionKey(action)}
 									lang={$currentLanguage.code}
 									fallbackLang="default"
 								/>
-							</ssk-text>
-						</span>
+							</ssk-button>
+						</ssk-tooltip>
+					{:else}
 						<ssk-button
 							variant="outline"
 							size="sm"
 							themeColor="primary"
-							disabled
+							on:click={() => handleRowAction(order)}
 							data-testid={`orders.table-cell.action.row.${idx}`}
 						>
 							<ssk-i18n-translate
-								key={rowAction.labelKey}
+								key={rowActionKey(action)}
 								lang={$currentLanguage.code}
 								fallbackLang="default"
 							/>
 						</ssk-button>
-					</ssk-tooltip>
-				{:else}
-					<ssk-button
-						variant="outline"
-						size="sm"
-						themeColor="primary"
-						on:click={() => handleRowAction(order)}
-						data-testid={`orders.table-cell.action.row.${idx}`}
-					>
-						<ssk-i18n-translate
-							key={rowAction.labelKey}
-							lang={$currentLanguage.code}
-							fallbackLang="default"
-						/>
-					</ssk-button>
-				{/if}
-			</ssk-table-cell>
+					{/if}
+				</ssk-table-cell>
 
-			<ssk-table-row expanded={expanded[rowKey]} padding="none" borderBottom="none">
-				{#if expanded[rowKey]}
-					<ssk-dynamic-table
-						columnsWidth={COLS}
-						height="auto"
-						backgroundColor="gray.50"
-						data-testid={`orders.payment-dropdown.row.${idx}`}
-					>
-						{#each txn?.payments ?? [] as p, pIdx}
-							<ssk-table-cell align="left"></ssk-table-cell>
-							<ssk-table-cell align="left"></ssk-table-cell>
-							<ssk-table-cell align="left"></ssk-table-cell>
-							<ssk-table-cell align="left"></ssk-table-cell>
-
-							<!-- amount col -->
-							<ssk-table-cell align="left">
-								<div class="total-container">
-									<ssk-text color="stroke">฿</ssk-text>
-									<ssk-text size="md" color="gray.800">{formatPrice(p.amount ?? 0)}</ssk-text>
-								</div>
-							</ssk-table-cell>
-
-							<!-- payment status col -->
-							<ssk-table-cell align="left">
-								<div class="payment-status-cell">
-									<ssk-badge
-										variant="subtle"
-										size="md"
-										themecolor={slipStatusTheme(p.paymentState)}
-										data-testid={`orders.payment-status-badge.row.${idx}.${pIdx}`}
-									>
-										{#if slipStatusI18nKey(p.paymentState)}
-											<ssk-i18n-translate
-												key={slipStatusI18nKey(p.paymentState)}
-												lang={$currentLanguage.code}
-												fallbackLang="default"
-											/>
-										{:else}
-											-
-										{/if}
-									</ssk-badge>
-									<ssk-text
-										size="xs"
-										color="stroke"
-										data-testid={`orders.payment-method.row.${idx}.${pIdx}`}
-									>
-										<ssk-i18n-translate
-											key={paymentMethodI18nKey(p.method)}
-											lang={$currentLanguage.code}
-											fallbackLang="default"
-										/>
-									</ssk-text>
-								</div>
-							</ssk-table-cell>
-
-							<!-- slip thumbnail (non-cash only) — click opens slip modal read-only -->
-							<ssk-table-cell align="left">
-								{#if p.method !== PaymentMethod.CASH}
-									<div
-										class="slip-thumb"
-										class:clickable={!!p.fullImageUrl}
-										role={p.fullImageUrl ? 'button' : undefined}
-										tabindex={p.fullImageUrl ? 0 : undefined}
-										on:click={() =>
-											p.fullImageUrl &&
-											openSlipModal(SlipModalType.SlipReview, {
-												order,
-												payment: p,
-												mode: SlipModalMode.View
-											})}
-										on:keydown={(e) => {
-											if ((e.key === 'Enter' || e.key === ' ') && p.fullImageUrl) {
-												e.preventDefault();
-												openSlipModal(SlipModalType.SlipReview, {
-													order,
-													payment: p,
-													mode: SlipModalMode.View
-												});
-											}
-										}}
-										data-testid={`orders.payment-slip-thumb.row.${idx}.${pIdx}`}
-									>
-										{#if p.thumbnailUrl}
-											<ssk-image
-												src={withCompanyRef(p.thumbnailUrl, $currentCompany?.id)}
-												fallbackSrc="/images/default-image.png"
-												width="40px"
-												height="40px"
-												objectFit="cover"
-												rounded="sm"
-											></ssk-image>
-										{:else}
-											<ssk-image
-												src="/images/default-image.png"
-												fallbackSrc="/images/default-image.png"
-												width="40px"
-												height="40px"
-												objectFit="cover"
-												rounded="sm"
-											></ssk-image>
-										{/if}
+				<ssk-table-row expanded={expanded[rowKey]} padding="none" borderBottom="none">
+					{#if expanded[rowKey]}
+						<ssk-dynamic-table
+							columnsWidth={COLS}
+							height="auto"
+							backgroundColor="gray.50"
+							data-testid={`orders.payment-dropdown.row.${idx}`}
+						>
+							{#each order.payments as p, pIdx (p.id)}
+								<ssk-table-cell align="left"></ssk-table-cell>
+								<ssk-table-cell align="left"></ssk-table-cell>
+								<ssk-table-cell align="left"></ssk-table-cell>
+								<ssk-table-cell align="left"></ssk-table-cell>
+								<ssk-table-cell align="left"></ssk-table-cell>
+								<ssk-table-cell align="left">
+									<div class="total-container">
+										<ssk-text color="stroke">฿</ssk-text>
+										<ssk-text size="md" color="gray.800">{formatPrice(p.amount)}</ssk-text>
 									</div>
-								{/if}
-							</ssk-table-cell>
-							<ssk-table-cell align="left"></ssk-table-cell>
-
-							<ssk-table-cell align="left">
-								{#if p.paymentState === SlipPaymentState.UNDER_REVIEW}
-									{#if canManagePayment}
-										<ssk-button
-											variant="outline"
-											size="sm"
-											themeColor="primary"
-											on:click={() =>
-												openSlipModal(SlipModalType.SlipReview, { order, payment: p })}
-											data-testid={`orders.payment-action.row.${idx}.${pIdx}`}
+								</ssk-table-cell>
+								<ssk-table-cell align="left">
+									<div class="payment-status-cell">
+										<ssk-badge
+											variant="subtle"
+											size="md"
+											themecolor={paymentStatusTheme(p.status)}
+											data-testid={`orders.payment-status-badge.row.${idx}.${pIdx}`}
 										>
 											<ssk-i18n-translate
-												key="order.payment.review_btn"
+												key={paymentStatusKey(p.status)}
 												lang={$currentLanguage.code}
 												fallbackLang="default"
 											/>
-										</ssk-button>
-									{:else}
-										<!-- no patona.order.payment.manage → disabled + tooltip -->
-										<ssk-tooltip
+										</ssk-badge>
+										<ssk-text
 											size="xs"
-											themeColor="black"
-											hideCloseButton={true}
-											areaPosition="130%"
+											color="stroke"
+											data-testid={`orders.payment-method.row.${idx}.${pIdx}`}
 										>
-											<span slot="content" class="tooltip-content">
-												<ssk-text size="xs" color="white">
-													<ssk-i18n-translate
-														key="common.permission.access_restricted"
-														lang={$currentLanguage.code}
-														fallbackLang="default"
-													/>
-												</ssk-text>
-											</span>
-											<ssk-button
-												variant="outline"
-												size="sm"
-												themeColor="primary"
-												disabled
-												data-testid={`orders.payment-action.row.${idx}.${pIdx}`}
-											>
-												<ssk-i18n-translate
-													key="order.payment.review_btn"
-													lang={$currentLanguage.code}
-													fallbackLang="default"
-												/>
-											</ssk-button>
-										</ssk-tooltip>
-									{/if}
-								{/if}
-							</ssk-table-cell>
-						{/each}
-					</ssk-dynamic-table>
-				{/if}
-			</ssk-table-row>
-		{/each}
+											<ssk-i18n-translate
+												key={`oms.order.payment_method.${p.method}`}
+												lang={$currentLanguage.code}
+												fallbackLang="default"
+											/>
+										</ssk-text>
+									</div>
+								</ssk-table-cell>
+								<ssk-table-cell align="left"></ssk-table-cell>
+								<ssk-table-cell align="left">
+									<ssk-date-display date={p.paidAt} />
+								</ssk-table-cell>
+								<ssk-table-cell align="left"></ssk-table-cell>
+								<ssk-table-cell align="left"></ssk-table-cell>
+							{/each}
+						</ssk-dynamic-table>
+					{/if}
+				</ssk-table-row>
+			{/each}
 
-		<div class="divider" slot="footer" />
-		<ssk-pagination
-			slot="footer"
-			showrowsperpage
-			showBtnPage
-			showGoToPage
-			dropdownAnchor="top"
-			data-testid="orders.pagination"
-			{currentPage}
-			{totalpages}
-			{rowsPerPage}
-			pageSize={rowsPerPage}
-			on:page-changed={handlePageChange}
-			on:rows-per-page-changed={handleRowPerPageChange}
-		></ssk-pagination>
-	{:else}
-		<div class="table-placeholder" slot="placeholder">
-			<BlankPage description={orderNotFound} height="60dvh" />
-		</div>
-	{/if}
-</ssk-dynamic-table>
+			<div class="divider" slot="footer" />
+			<ssk-pagination
+				slot="footer"
+				showrowsperpage
+				showBtnPage
+				showGoToPage
+				dropdownAnchor="top"
+				data-testid="orders.pagination"
+				{currentPage}
+				{totalpages}
+				{rowsPerPage}
+				pageSize={rowsPerPage}
+				on:page-changed={handlePageChange}
+				on:rows-per-page-changed={handleRowPerPageChange}
+			></ssk-pagination>
+		</ssk-dynamic-table>
+	</div>
+{/if}
 
 <style lang="css">
+	/* width:0 + min-width:100% stops the wide table from stretching the page card;
+	   only this wrapper scrolls sideways. */
+	.table-scroll {
+		width: 0;
+		min-width: 100%;
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+	}
+
+	.table-scroll > ssk-dynamic-table {
+		display: block;
+		min-width: 1660px;
+	}
+
+	/* ssk-badge sets white-space:normal inside its shadow root, so nowrap on the host is
+	   overridden — apply it to the slotted content instead (one line, never wraps). */
+	ssk-badge,
+	ssk-badge > :global(*) {
+		white-space: nowrap;
+	}
+
+	/* Fulfillment pills — same language as the role badges in user management:
+	   outlined pill, circular icon(s) on the left, round action button beside it. */
+	.fulfill-wrap {
+		display: flex;
+		align-items: center;
+		gap: var(--spacing-2, 8px);
+	}
+	.fulfill-wrap.open {
+		align-items: flex-end;
+	}
+
+	.fulfill-pills {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--spacing-1, 4px);
+	}
+
+	.fulfill-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 3px 12px 3px 4px;
+		border: 1px solid var(--ssk-colors-gray-300);
+		border-radius: 999px;
+		background: var(--ssk-colors-white, #fff);
+		white-space: nowrap;
+	}
+
+	.icon-stack {
+		display: inline-flex;
+	}
+	.icon-stack .icon-dot + .icon-dot {
+		margin-left: -8px; /* overlap like an avatar stack */
+	}
+
+	.icon-dot {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: var(--ssk-colors-gray-100);
+		box-shadow: 0 0 0 2px var(--ssk-colors-white, #fff);
+	}
+
+	/* Round icon button, 32px min touch target */
+	.fulfill-toggle {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		width: 32px;
+		height: 32px;
+		padding: 0;
+		border: 1px solid var(--ssk-colors-gray-300);
+		border-radius: 50%;
+		background: var(--ssk-colors-white, #fff);
+		cursor: pointer;
+	}
+	.fulfill-toggle[aria-expanded='true'] {
+		border-color: var(--ssk-colors-primary-300);
+		background: var(--ssk-colors-primary-50);
+	}
+	.fulfill-toggle:focus-visible {
+		outline: 2px solid var(--ssk-colors-primary-400);
+		outline-offset: 2px;
+	}
+
+	.state {
+		border-top: 1px solid var(--ssk-colors-gray-200);
+	}
+
+	.state.message {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: var(--spacing-2, 8px);
+		min-height: 40dvh;
+		padding: var(--spacing-6, 24px) var(--spacing-4, 16px);
+		text-align: center;
+	}
+
+	.state.message ssk-button {
+		margin-top: var(--spacing-2, 8px);
+	}
+
+	.skeleton-row {
+		display: flex;
+		align-items: center;
+		gap: var(--spacing-6, 24px);
+		padding: var(--spacing-4, 16px) var(--spacing-6, 24px);
+		border-bottom: 1px solid var(--ssk-colors-gray-100);
+		overflow: hidden;
+	}
+
 	ssk-dynamic-table {
 		--table-border-color: var(--ssk-colors-gray-200);
 		color: var(--ssk-colors-gray-500);
@@ -553,6 +748,7 @@
 		width: 100%;
 	}
 
+	.chevron,
 	.copy-container {
 		display: flex;
 		align-items: center;
@@ -582,10 +778,6 @@
 		flex-direction: column;
 		gap: 2px;
 		align-items: flex-start;
-	}
-
-	.slip-thumb.clickable {
-		cursor: pointer;
 	}
 
 	.tooltip-content {

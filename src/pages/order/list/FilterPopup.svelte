@@ -1,450 +1,336 @@
 <script lang="ts">
+	// OMS 2.0 filter popup (DES-2235): channel / payment status / fulfillment /
+	// order status (per tab) / stock + date range. Replaces the legacy payment-method
+	// and courier filters. Channel options come from data, never a hardcoded list.
 	import { currentLanguage } from '$stores/i18n';
 	import {
 		isClearSearchFilter,
 		oFilter,
 		resetFilterOptions,
-		setDefaultOrderFilter,
 		setFilter,
 		setIsClearSearchOrderFilter,
-		setTotal
+		countActiveFilters,
+		type FilterGroup,
+		type OrderFilterOptions
 	} from '$stores/order/filter';
-	import _ from 'lodash';
 	import type { I18nStore } from '@sellsuki-org/sellsuki-components';
-	import { beforeUpdate, getContext, onMount } from 'svelte';
+	import { getContext, onMount } from 'svelte';
 	import {
-		type FilterOption,
-		groupedChannels,
-		groupedCouriers,
-		mappedChannels,
-		mappedStatuses,
-		type OrderStatus,
-		toInitFilterOrder,
-		toOrderFilter,
-		Courier
-	} from './filterHandler';
+		ChannelGroup,
+		FulfillmentType,
+		Oms2OrderStatus,
+		Oms2PaymentStatus,
+		Oms2Tab,
+		StockState,
+		TAB_STATUSES,
+		type Oms2Channel
+	} from '$lib/entities/order/oms2-order-list';
+	import { mockOms2Channels } from '$lib/mock/mock-oms2-orders';
+	import { orderStatusKey, paymentStatusKey, stockKey } from './order-tab';
 
 	export let disabled: boolean = true;
-	export let oType: OrderStatus;
+	export let tab: Oms2Tab;
 
 	const i18nStore = getContext<I18nStore>('i18n');
+
+	type Option = { value: string; labelKey?: string; label?: string };
+	type Section = {
+		group: FilterGroup;
+		titleKey: string;
+		options: Option[];
+		subgroups?: { titleKey: string; options: Option[] }[];
+	};
+
+	// API bypassed: channel list from the mock source. Swap for the store-channels API later.
+	const channels: Oms2Channel[] = mockOms2Channels();
+	const CHANNEL_GROUP_KEY: Record<ChannelGroup, string> = {
+		[ChannelGroup.Store]: 'oms.order.filter.channel_group.store',
+		[ChannelGroup.Online]: 'oms.order.filter.channel_group.online',
+		[ChannelGroup.Link]: 'oms.order.filter.channel_group.link'
+	};
+
+	const enumOptions = (values: string[], key: (v: string) => string): Option[] =>
+		values.map((v) => ({ value: v, labelKey: key(v) }));
+
+	// Order-status options only make sense where the tab holds more than one status.
+	const statusOptionsFor = (t: Oms2Tab): Option[] => {
+		const list = TAB_STATUSES[t] ?? Object.values(Oms2OrderStatus);
+		return list.length > 1 ? enumOptions(list, (v) => orderStatusKey(v as Oms2OrderStatus)) : [];
+	};
+
+	$: sections = [
+		{
+			group: 'channels',
+			titleKey: 'patona-sellercenter-myorder-table-header-saleschannel',
+			options: [],
+			subgroups: (Object.values(ChannelGroup) as ChannelGroup[])
+				.map((g) => ({
+					titleKey: CHANNEL_GROUP_KEY[g],
+					options: channels
+						.filter((c) => c.group === g)
+						.map((c) => ({ value: c.id, label: c.name }))
+				}))
+				.filter((s) => s.options.length)
+		},
+		{
+			group: 'paymentStatuses',
+			titleKey: 'patona-sellercenter-myorder-title-paymentstatus',
+			options: enumOptions(Object.values(Oms2PaymentStatus), (v) =>
+				paymentStatusKey(v as Oms2PaymentStatus)
+			)
+		},
+		{
+			group: 'fulfillments',
+			titleKey: 'oms.order.header.fulfillment',
+			options: enumOptions(Object.values(FulfillmentType), (v) => `oms.order.fulfillment.${v}`)
+		},
+		{
+			group: 'statuses',
+			titleKey: 'patona-sellercenter-myorder-table-header-orderstatus',
+			options: statusOptionsFor(tab)
+		},
+		{
+			group: 'stocks',
+			titleKey: 'oms.order.header.stock',
+			options: enumOptions([StockState.Reserved, StockState.Partial, StockState.Deducted], (v) =>
+				stockKey(v as StockState)
+			)
+		}
+	].filter((s) => s.options.length || s.subgroups?.length) as Section[];
+
+	// ssk-checkbox takes a plain string label, so resolve i18n keys up front.
+	let labels: Record<string, string> = {};
+	async function loadLabels(lang: string, secs: Section[]) {
+		const keys = new Set<string>([
+			'patona-sellercenter-myorder-title-daterange',
+			'patona-sellercenter-myorder-placeholder-startdate',
+			'patona-sellercenter-myorder-placeholder-enddate'
+		]);
+		for (const s of secs) {
+			for (const o of [...s.options, ...(s.subgroups ?? []).flatMap((g) => g.options)])
+				if (o.labelKey) keys.add(o.labelKey);
+		}
+		// One getAll() read instead of N parallel get()s — concurrent IDB gets came back
+		// as raw keys in practice.
+		// Shape differs by store version: nested {key:{lang}} or flat {"key-lang": value}.
+		const all = ((await i18nStore.getAll()) ?? {}) as Record<string, unknown>;
+		const pick = (k: string): string => {
+			const nested = all[k] as Record<string, string> | undefined;
+			const flat = (l: string) => all[`${k}-${l}`] as string | undefined;
+			return nested?.[lang] ?? nested?.default ?? flat(lang) ?? flat('default') ?? k;
+		};
+		labels = Object.fromEntries([...keys].map((k) => [k, pick(k)] as const));
+	}
+	// Also re-resolve on open: keywords may still be loading when the page first mounts.
+	$: if ($currentLanguage.code) loadLabels($currentLanguage.code, sections);
+	$: if (!disabled) loadLabels($currentLanguage.code, sections);
+
+	// Draft selection — committed to the store only on Apply.
+	let draft: Record<FilterGroup, string[]> = emptyDraft();
 	let dateFrom: Date | undefined;
 	let dateTo: Date | undefined;
-	let dateError: boolean = false;
-	let dateText: string = '';
-	let filterOption: FilterOption;
-	let datePicker = {
-		label: '',
-		phdFrom: '',
-		phdTo: ''
+
+	function emptyDraft(): Record<FilterGroup, string[]> {
+		return { channels: [], paymentStatuses: [], fulfillments: [], statuses: [], stocks: [] };
+	}
+
+	function syncFromStore() {
+		draft = {
+			channels: [...($oFilter.channels ?? [])],
+			paymentStatuses: [...($oFilter.paymentStatuses ?? [])],
+			fulfillments: [...($oFilter.fulfillments ?? [])],
+			statuses: [...($oFilter.statuses ?? [])],
+			stocks: [...($oFilter.stocks ?? [])]
+		};
+		dateFrom = $oFilter.createdDate ? new Date($oFilter.createdDate.start) : undefined;
+		dateTo = $oFilter.createdDate ? new Date($oFilter.createdDate.end) : undefined;
+	}
+
+	// Re-sync whenever the popup opens or the committed filter changes (URL/back nav).
+	$: if ($oFilter && disabled) syncFromStore();
+
+	const toggle = (g: FilterGroup, v: string) => {
+		const cur = draft[g];
+		draft = { ...draft, [g]: cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v] };
 	};
-	let stateLabels: Record<string, string> = {};
-	let channelLabels: Record<string, string> = {};
 
-	const courierLabelMap: Record<string, string> = {
-		[Courier.unknownStandard]: 'ไม่ระบุ',
-		[Courier.unknownSameday]: 'ไม่ระบุ'
+	const isFuture = (date?: Date) => {
+		if (!date) return false;
+		const today = new Date();
+		today.setHours(0, 0, 0, 0);
+		const d = new Date(date);
+		d.setHours(0, 0, 0, 0);
+		return d > today;
 	};
+	const disabledDate = (date: Date) => isFuture(date);
 
-	$: if ($currentLanguage.code) {
-		loadKeywords();
-	}
+	$: dateOrderError = !!(dateFrom && dateTo && dateFrom.getTime() > dateTo.getTime());
+	$: dateError = dateOrderError || isFuture(dateFrom) || isFuture(dateTo);
 
-	async function fetchDataKeyword(keywordToTranslate: string): Promise<string> {
-		let result = await i18nStore.get(keywordToTranslate, $currentLanguage.code, 'default');
+	$: draftOptions = {
+		...draft,
+		createdDate:
+			dateFrom && dateTo ? { start: dateFrom.toISOString(), end: dateTo.toISOString() } : undefined
+	} as OrderFilterOptions;
+	$: draftCount = countActiveFilters(draftOptions);
 
-		return result;
-	}
-
-	async function convertKeyword(key: string, labelType: 'state' | 'channel') {
-		const resultConvert = await fetchDataKeyword(key);
-		if (labelType === 'state') {
-			stateLabels = { ...stateLabels, [key]: resultConvert };
-		} else if (labelType === 'channel') {
-			channelLabels = { ...channelLabels, [key]: resultConvert };
-		}
-	}
-
-	$: {
-		if (filterOption?.paymentState) {
-			filterOption.paymentState?.map(async (ps) => await convertKeyword(ps.state, 'state'));
-		}
-
-		if (filterOption?.paymentChannel) {
-			filterOption.paymentChannel?.map(async (pc) => await convertKeyword(pc.channel, 'channel'));
-		}
-	}
-
-	function handleDateValue(e: any) {
-		const { valueFrom, valueTo } = e.detail;
-		dateFrom = valueFrom;
-		dateTo = valueTo;
-
-		if (!dateFrom && !dateTo) {
-			dateError = false;
-		}
-	}
-
-	function toggleChannelChecked(chn: string, c: boolean) {
-		filterOption.paymentChannel = filterOption.paymentChannel?.map((pChannel) => {
-			if (pChannel.channel === chn) {
-				pChannel.checked = !c;
-			}
-
-			return pChannel;
-		});
-	}
-
-	function toggleSalesChecked(s: string, c: boolean) {
-		filterOption.salesChannels = filterOption.salesChannels?.map((sChannel) => {
-			if (sChannel.channel === s) {
-				sChannel.checked = !c;
-			}
-
-			return sChannel;
-		});
-	}
-
-	function toggleStateChecked(sts: string, c: boolean) {
-		filterOption.paymentState = filterOption.paymentState?.map((pChannel) => {
-			if (pChannel.state === sts) {
-				pChannel.checked = !c;
-			}
-
-			return pChannel;
-		});
-	}
-
-	function toggleCourierChecked(cr: string, c: boolean) {
-		filterOption.couriers = filterOption.couriers?.map((courier) => {
-			if (courier.name === cr) {
-				courier.checked = !c;
-			}
-
-			return courier;
-		});
-	}
-
-	function handleClickOutside(e: Event) {
-		if (!(e.target as HTMLInputElement).closest('.filter')) {
-			disabled = true;
-		}
+	function handleDateValue(e: CustomEvent) {
+		dateFrom = e.detail.valueFrom;
+		dateTo = e.detail.valueTo;
 	}
 
 	function clearFilter() {
-		resetFilterOptions();
-		filterOption = toInitFilterOrder(oType, $oFilter);
-
+		draft = emptyDraft();
 		dateFrom = undefined;
 		dateTo = undefined;
-
-		dateError = false;
-		setDefaultOrderFilter();
+		resetFilterOptions();
 	}
 
 	function applyFilter() {
-		resetFilterOptions();
-
-		setTotal(filterOption.total);
-		const orderFilter = toOrderFilter(filterOption, { from: dateFrom, to: dateTo });
-		setFilter(orderFilter);
-
-		disabled = !disabled;
+		setFilter(draftOptions);
+		disabled = true;
 	}
 
-	$: {
-		if ($isClearSearchFilter) {
-			filterOption = toInitFilterOrder(oType, $oFilter);
-			setIsClearSearchOrderFilter(false);
-			dateError = false;
-		}
-
-		if (dateFrom && dateTo) {
-			const f = dateFrom.getTime();
-			const t = dateTo.getTime();
-			if (f > t) {
-				dateError = true;
-			} else {
-				dateError = false;
-			}
-		}
-
-		if (dateError) {
-			dateText = 'วันที่เริ่มต้นต้องอยู่ก่อนวันที่สิ้นสุด';
-		}
-
-		if (disabledDate(dateFrom!) || disabledDate(dateTo!)) {
-			dateText = '';
-			dateError = true;
-		}
+	$: if ($isClearSearchFilter) {
+		draft = emptyDraft();
+		dateFrom = undefined;
+		dateTo = undefined;
+		setIsClearSearchOrderFilter(false);
 	}
 
-	function disabledDate(date: Date): boolean {
-		const today = new Date();
-		today.setHours(0, 0, 0, 0);
-
-		const targetDate = new Date(date);
-		targetDate.setHours(0, 0, 0, 0);
-
-		return targetDate > today;
-	}
-
-	beforeUpdate(() => {
-		if (filterOption) {
-			const hasFilter = [
-				!!(dateFrom && dateTo),
-				!!filterOption.paymentChannel?.find((chn) => chn.checked),
-				!!filterOption.salesChannels?.find((s) => s.checked),
-				!!filterOption.paymentState?.find((sts) => sts.checked),
-				!!filterOption.couriers?.find((c) => c.checked)
-			];
-
-			const count = _.countBy(hasFilter, (value) => value);
-			filterOption.total = count['true'] ?? 0;
-		}
-	});
-
-	$: {
-		if ($oFilter) {
-			filterOption = toInitFilterOrder(oType, $oFilter);
-		}
-		if ($oFilter.createdDate) {
-			dateFrom = new Date($oFilter.createdDate.start);
-			dateTo = new Date($oFilter.createdDate.end);
-		}
+	function handleClickOutside(e: Event) {
+		if (!(e.target as HTMLElement).closest('.filter')) disabled = true;
 	}
 
 	onMount(() => {
-		filterOption = toInitFilterOrder(oType, $oFilter);
-
 		document.addEventListener('click', handleClickOutside);
-
-		return () => {
-			document.removeEventListener('click', handleClickOutside);
-		};
+		return () => document.removeEventListener('click', handleClickOutside);
 	});
 
-	const loadKeywords = async () => {
-		datePicker.label = await i18nStore.get(
-			'patona-sellercenter-myorder-title-daterange',
-			$currentLanguage.code,
-			'default'
-		);
-		datePicker.phdFrom = await i18nStore.get(
-			'patona-sellercenter-myorder-placeholder-startdate',
-			$currentLanguage.code,
-			'default'
-		);
-		datePicker.phdTo = await i18nStore.get(
-			'patona-sellercenter-myorder-placeholder-enddate',
-			$currentLanguage.code,
-			'default'
-		);
-	};
+	// `labels` is passed in explicitly: Svelte only re-renders a template call when one of
+	// its arguments changes, so reading it from the closure left labels stuck on raw keys.
+	const optLabel = (o: Option, l: Record<string, string>) =>
+		o.label ?? (o.labelKey ? l[o.labelKey] ?? o.labelKey : o.value);
 </script>
 
-{#if filterOption}
-	<div class={`popup ${disabled ? 'disabled' : ''}`} data-testid="orders.dropdown.popup-filter">
-		<div class="title">
-			<ssk-text
-				size="xl"
-				color="gray.800"
-				fontweight="medium"
-				data-testid="orders.filter.text.title"
-			>
-				<ssk-i18n-translate
-					key="patona-sellercenter-myorder-button-filter"
-					lang={$currentLanguage.code}
-					fallbackLang="default"
-				/>
-			</ssk-text>
-			<ssk-icon
-				name="solid-x-mark"
-				color="gray.500"
-				on:click={() => (disabled = !disabled)}
-				data-testid="orders.filter.button.close"
+<div class={`popup ${disabled ? 'disabled' : ''}`} data-testid="orders.dropdown.popup-filter">
+	<div class="title">
+		<ssk-text size="xl" color="gray.800" fontweight="medium" data-testid="orders.filter.text.title">
+			<ssk-i18n-translate
+				key="patona-sellercenter-myorder-button-filter"
+				lang={$currentLanguage.code}
+				fallbackLang="default"
 			/>
-		</div>
-		<div class="body">
-			{#if filterOption.createdDate}
-				<ssk-range-date-picker
-					color="gray"
-					label={datePicker.label}
-					placeholderFrom={datePicker.phdFrom}
-					placeholderTo={datePicker.phdTo}
-					format="dd-MM-yyyy"
-					on:change={handleDateValue}
-					valueFrom={dateFrom}
-					valueTo={dateTo}
-					error={dateError}
-					helperText={dateText}
-					themecolor="primary"
-					alignCalendar="right"
-					widthCalendar="500px"
-					{disabledDate}
-				></ssk-range-date-picker>
-			{/if}
-			<ssk-accordion mode="multiple" align="left" themeColor="white">
-				{#if filterOption.paymentState}
-					<ssk-accordion-item id="payment-state" open>
-						<ssk-text slot="title" color="gray.800" fontweight="medium">
-							<ssk-i18n-translate
-								key="patona-sellercenter-myorder-title-paymentstatus"
-								lang={$currentLanguage.code}
-								fallbackLang="default"
-							/>
-						</ssk-text>
-						<ssk-icon slot="icon-open" size="sm" themeColor="black" name="solid-chevron-up"
-						></ssk-icon>
-						<ssk-icon slot="icon-close" size="sm" themeColor="black" name="solid-chevron-down"
-						></ssk-icon>
+		</ssk-text>
+		<ssk-icon
+			name="solid-x-mark"
+			color="gray.500"
+			on:click={() => (disabled = true)}
+			data-testid="orders.filter.button.close"
+		/>
+	</div>
+	<div class="body">
+		<ssk-range-date-picker
+			color="gray"
+			label={labels['patona-sellercenter-myorder-title-daterange'] ?? ''}
+			placeholderFrom={labels['patona-sellercenter-myorder-placeholder-startdate'] ?? ''}
+			placeholderTo={labels['patona-sellercenter-myorder-placeholder-enddate'] ?? ''}
+			format="dd-MM-yyyy"
+			on:change={handleDateValue}
+			valueFrom={dateFrom}
+			valueTo={dateTo}
+			error={dateError}
+			helperText={dateOrderError ? 'วันที่เริ่มต้นต้องอยู่ก่อนวันที่สิ้นสุด' : ''}
+			themecolor="primary"
+			alignCalendar="right"
+			widthCalendar="500px"
+			{disabledDate}
+		></ssk-range-date-picker>
+		<ssk-accordion mode="multiple" align="left" themeColor="white">
+			{#each sections as s (s.group)}
+				<ssk-accordion-item id={`filter-${s.group}`} open>
+					<ssk-text slot="title" color="gray.800" fontweight="medium">
+						<ssk-i18n-translate
+							key={s.titleKey}
+							lang={$currentLanguage.code}
+							fallbackLang="default"
+						/>
+					</ssk-text>
+					<ssk-icon slot="icon-open" size="sm" themeColor="black" name="solid-chevron-up"
+					></ssk-icon>
+					<ssk-icon slot="icon-close" size="sm" themeColor="black" name="solid-chevron-down"
+					></ssk-icon>
+					{#if s.subgroups}
+						{#each s.subgroups as sg}
+							<div class="section-title">
+								<ssk-text color="gray.800">
+									<ssk-i18n-translate
+										key={sg.titleKey}
+										lang={$currentLanguage.code}
+										fallbackLang="default"
+									/>
+								</ssk-text>
+							</div>
+							<div class="item">
+								{#each sg.options as o (o.value)}
+									<ssk-checkbox
+										label={optLabel(o, labels)}
+										checked={draft[s.group].includes(o.value)}
+										color="gray.800"
+										testId={`orders.filter.checkbox.${s.group}.${o.value}`}
+										on:change={() => toggle(s.group, o.value)}
+									/>
+								{/each}
+							</div>
+						{/each}
+					{:else}
 						<div class="item">
-							{#each filterOption.paymentState as ps}
+							{#each s.options as o (o.value)}
 								<ssk-checkbox
-									label={stateLabels[ps.state]}
-									checked={ps.checked}
+									label={optLabel(o, labels)}
+									checked={draft[s.group].includes(o.value)}
 									color="gray.800"
-									testId={`orders.filter.checkbox.payment.${mappedStatuses([ps.state])[0]}`}
-									on:change={toggleStateChecked(ps.state, ps.checked)}
+									testId={`orders.filter.checkbox.${s.group}.${o.value}`}
+									on:change={() => toggle(s.group, o.value)}
 								/>
 							{/each}
 						</div>
-					</ssk-accordion-item>
-				{/if}
-				{#if filterOption.salesChannels}
-					<ssk-accordion-item id="sales" open>
-						<ssk-text color="gray.800" slot="title" fontweight="medium"> ช่องทางการขาย </ssk-text>
-						<ssk-icon slot="icon-open" size="sm" themeColor="black" name="solid-chevron-up"
-						></ssk-icon>
-						<ssk-icon slot="icon-close" size="sm" themeColor="black" name="solid-chevron-down"
-						></ssk-icon>
-						<div class="section-title">
-							<ssk-text color="gray.800"> หน้าร้าน </ssk-text>
-						</div>
-						<div class="item">
-							{#each filterOption.salesChannels.filter( (sc) => groupedChannels.storefront.includes(sc.channel) ) as sc}
-								<ssk-checkbox
-									label={sc.channel}
-									checked={sc.checked}
-									color="gray.800"
-									data-testid={`orders.filter.checkbox.${sc.channel}`}
-									on:change={toggleSalesChecked(sc.channel, sc.checked)}
-								/>
-							{/each}
-						</div>
-						<div class="section-title">
-							<ssk-text color="gray.800"> ออนไลน์ </ssk-text>
-						</div>
-						<div class="item">
-							{#each filterOption.salesChannels.filter( (sc) => groupedChannels.online.includes(sc.channel) ) as sc}
-								<ssk-checkbox
-									label={sc.channel}
-									checked={sc.checked}
-									color="gray.800"
-									data-testid={`orders.filter.checkbox.${sc.channel}`}
-									on:change={toggleSalesChecked(sc.channel, sc.checked)}
-								/>
-							{/each}
-						</div>
-					</ssk-accordion-item>
-				{/if}
-				{#if filterOption.paymentChannel}
-					<ssk-accordion-item id="payment-channel" open>
-						<ssk-text color="gray.800" slot="title" fontweight="medium">
-							<ssk-i18n-translate
-								key="patona-sellercenter-myorder-title-paymentmethod"
-								lang={$currentLanguage.code}
-								fallbackLang="default"
-							/>
-						</ssk-text>
-						<ssk-icon slot="icon-open" size="sm" themeColor="black" name="solid-chevron-up"
-						></ssk-icon>
-						<ssk-icon slot="icon-close" size="sm" themeColor="black" name="solid-chevron-down"
-						></ssk-icon>
-						<div class="item">
-							{#each filterOption.paymentChannel as pc}
-								<ssk-checkbox
-									label={channelLabels[pc.channel]}
-									checked={pc.checked}
-									color="gray.800"
-									data-testid={`orders.filter.checkbox.${mappedChannels([pc.channel])[0]}`}
-									on:change={toggleChannelChecked(pc.channel, pc.checked)}
-								/>
-							{/each}
-						</div>
-					</ssk-accordion-item>
-				{/if}
-				{#if filterOption.couriers}
-					<ssk-accordion-item id="couriers" open>
-						<ssk-text color="gray.800" slot="title" fontweight="medium"> บริษัทขนส่ง </ssk-text>
-						<ssk-icon slot="icon-open" size="sm" themeColor="black" name="solid-chevron-up"
-						></ssk-icon>
-						<ssk-icon slot="icon-close" size="sm" themeColor="black" name="solid-chevron-down"
-						></ssk-icon>
-						<div class="section-title">
-							<ssk-text color="gray.800"> Standard </ssk-text>
-						</div>
-						<div class="item">
-							{#each filterOption.couriers.filter( (c) => groupedCouriers.standard.includes(c.name) ) as c}
-								<ssk-checkbox
-									label={courierLabelMap[c.name] ?? c.name}
-									checked={c.checked}
-									color="gray.800"
-									data-testid={`orders.filter.checkbox.${c.name}`}
-									on:change={toggleCourierChecked(c.name, c.checked)}
-								/>
-							{/each}
-						</div>
-						<div class="section-title">
-							<ssk-text color="gray.800"> Same day </ssk-text>
-						</div>
-						<div class="item">
-							{#each filterOption.couriers.filter( (c) => groupedCouriers.sameday.includes(c.name) ) as c}
-								<ssk-checkbox
-									label={courierLabelMap[c.name] ?? c.name}
-									checked={c.checked}
-									color="gray.800"
-									data-testid={`orders.filter.checkbox.${c.name}`}
-									on:change={toggleCourierChecked(c.name, c.checked)}
-								/>
-							{/each}
-						</div>
-					</ssk-accordion-item>
-				{/if}
-			</ssk-accordion>
-		</div>
-		<div class="footer">
-			<ssk-button
-				variant="solid-light"
-				width="full"
-				themeColor="gray"
-				on:click={clearFilter}
-				data-testid="orders.filter.button.clear"
-			>
+					{/if}
+				</ssk-accordion-item>
+			{/each}
+		</ssk-accordion>
+	</div>
+	<div class="footer">
+		<ssk-button
+			variant="solid-light"
+			width="full"
+			themeColor="gray"
+			on:click={clearFilter}
+			data-testid="orders.filter.button.clear"
+		>
+			<ssk-i18n-translate
+				key="patona-sellercenter-myorder-button-clearall"
+				lang={$currentLanguage.code}
+				fallbackLang="default"
+			/>
+		</ssk-button>
+		<ssk-button
+			width="full"
+			on:click={applyFilter}
+			disabled={dateError}
+			data-testid="orders.filter.button.apply"
+		>
+			<span>
 				<ssk-i18n-translate
-					key="patona-sellercenter-myorder-button-clearall"
+					key="patona-sellercenter-myorder-button-apply"
 					lang={$currentLanguage.code}
 					fallbackLang="default"
 				/>
-			</ssk-button>
-			<ssk-button
-				width="full"
-				on:click={applyFilter}
-				disabled={dateError}
-				data-testid="orders.filter.button.apply"
-			>
-				<span>
-					<ssk-i18n-translate
-						key="patona-sellercenter-myorder-button-apply"
-						lang={$currentLanguage.code}
-						fallbackLang="default"
-					/>
-					{filterOption.total > 0 ? `(${filterOption.total})` : ''}
-				</span>
-			</ssk-button>
-		</div>
+				{draftCount > 0 ? `(${draftCount})` : ''}
+			</span>
+		</ssk-button>
 	</div>
-{/if}
+</div>
 
 <style>
 	.popup {
@@ -458,7 +344,8 @@
 		display: flex;
 		gap: 1rem;
 		width: 400px;
-		max-height: 508px;
+		max-width: calc(100vw - 32px);
+		max-height: 560px;
 		flex-direction: column;
 		z-index: 2;
 	}

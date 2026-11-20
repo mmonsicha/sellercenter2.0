@@ -1,73 +1,86 @@
 import { debounced } from '$utils/debounce';
 import { derived, writable } from 'svelte/store';
-import _ from 'lodash';
 
 export type Sort = 'desc' | 'asc';
-export type OrderFilter = {
-	search?: string;
-	sort?: Sort;
 
-	// filter options
-	total: number;
+// OMS 2.0 filter set (DES-2235). Replaces the legacy payment-method / courier filters.
+// Values are the raw enum strings from oms2-order-list.ts so they round-trip via the URL.
+export type OrderFilterOptions = {
 	createdDate?: {
 		start: string;
 		end: string;
 	};
-	payment?: {
-		status?: string[];
-		type?: string[];
-	};
-	salesChannels?: string[];
-	couriers?: string[];
+	channels?: string[];
+	paymentStatuses?: string[];
+	fulfillments?: string[];
+	statuses?: string[];
+	stocks?: string[];
 };
 
-export const isClearSearchFilter = writable<Boolean>(false);
+export type OrderFilter = OrderFilterOptions & {
+	search?: string;
+	sort?: Sort;
+	total: number; // number of active filter groups, for the badge
+};
+
+// URL key for each multi-select group.
+export const FILTER_QUERY_KEYS = {
+	channels: 'channels',
+	paymentStatuses: 'paymentStatus',
+	fulfillments: 'fulfillment',
+	statuses: 'status',
+	stocks: 'stock'
+} as const;
+
+export type FilterGroup = keyof typeof FILTER_QUERY_KEYS;
+export const FILTER_GROUPS = Object.keys(FILTER_QUERY_KEYS) as FilterGroup[];
+
+export const countActiveFilters = (o: OrderFilterOptions): number =>
+	(o.createdDate?.start && o.createdDate?.end ? 1 : 0) +
+	FILTER_GROUPS.filter((g) => (o[g]?.length ?? 0) > 0).length;
+
+export const isClearSearchFilter = writable<boolean>(false);
 export const oFilter = writable<OrderFilter>({ total: 0 });
 const previousFilterStore = writable<OrderFilter>({ total: 0 });
 
-export const setTotal = (t: number) => {
-	oFilter.update((f) => ({ ...f, total: t }));
-};
+const emptyOptions = (): OrderFilterOptions => ({
+	createdDate: undefined,
+	channels: undefined,
+	paymentStatuses: undefined,
+	fulfillments: undefined,
+	statuses: undefined,
+	stocks: undefined
+});
 
-export const setFilter = (o: OrderFilter) => {
+const nonEmpty = (a?: string[]) => (a?.length ? a : undefined);
+
+export const setFilter = (o: OrderFilterOptions) => {
 	oFilter.update((f) => ({
 		...f,
 		createdDate: o.createdDate,
-		payment: o.payment,
-		salesChannels: o.salesChannels,
-		couriers: o.couriers
+		channels: nonEmpty(o.channels),
+		paymentStatuses: nonEmpty(o.paymentStatuses),
+		fulfillments: nonEmpty(o.fulfillments),
+		statuses: nonEmpty(o.statuses),
+		stocks: nonEmpty(o.stocks),
+		total: countActiveFilters(o)
 	}));
 };
 
 export const setSorting = (s: Sort) => {
-	oFilter.update((f) => ({
-		...f,
-		sort: s
-	}));
+	oFilter.update((f) => ({ ...f, sort: s }));
 };
 
 export const setSearch = (s: string) => {
-	oFilter.update((f) => ({
-		...f,
-		search: s
-	}));
+	oFilter.update((f) => ({ ...f, search: s }));
 };
 
 export const setDefaultOrderFilter = () => {
-	oFilter.set({
-		total: 0
-	});
+	oFilter.set({ total: 0 });
 };
 
 export const resetFilterOptions = () => {
-	oFilter.update((f) => ({
-		...f,
-		total: 0,
-		createdDate: undefined,
-		payment: undefined,
-		salesChannels: undefined,
-		couriers: undefined
-	}));
+	oFilter.update((f) => ({ ...f, ...emptyOptions(), total: 0 }));
 };
 
 export const setIsClearSearchOrderFilter = (f: boolean) => {
@@ -92,40 +105,16 @@ export const hasFilterChanged = derived(
 	}
 );
 
-export function convertFilterToQueryParams(oFilter: OrderFilter): Record<string, string> {
-	const params: Record<string, string> = {};
-
-	if (oFilter.search) {
-		params.search = oFilter.search;
-	}
-
-	if (oFilter.sort) {
-		params.dir = oFilter.sort;
-	}
-
-	if (oFilter.createdDate?.start && oFilter.createdDate?.end) {
-		params.startDate = oFilter.createdDate.start;
-		params.endDate = oFilter.createdDate.end;
-	}
-
-	if (oFilter.payment?.status?.length) {
-		params.paymentStatus = oFilter.payment.status.join(',');
-	}
-
-	if (oFilter.payment?.type?.length) {
-		params.paymentType = oFilter.payment.type.join(',');
-	}
-
-	if (oFilter.salesChannels?.length) {
-		params.salesChannels = oFilter.salesChannels.join(',');
-	}
-
-	if (oFilter.couriers?.length) {
-		params.couriers = oFilter.couriers.join(',');
-	}
-
-	if (oFilter.total) {
-		params.total = oFilter.total.toString();
-	}
+// Every filter key always present ('' = cleared) so setQueryParams can delete stale ones.
+export function convertFilterToQueryParams(f: OrderFilter): Record<string, string> {
+	const hasDate = !!(f.createdDate?.start && f.createdDate?.end);
+	const params: Record<string, string> = {
+		search: f.search ?? '',
+		dir: f.sort ?? '',
+		startDate: hasDate ? f.createdDate!.start : '',
+		endDate: hasDate ? f.createdDate!.end : '',
+		total: f.total ? f.total.toString() : ''
+	};
+	for (const g of FILTER_GROUPS) params[FILTER_QUERY_KEYS[g]] = f[g]?.join(',') ?? '';
 	return params;
 }

@@ -3,9 +3,9 @@
 	import { debouncedSearch, isClearSearchFilter, oFilter } from '$stores/order/filter';
 	import type { I18nStore } from '@sellsuki-org/sellsuki-components';
 	import { getContext } from 'svelte';
-	import type { OrderStatus } from './filterHandler';
+	import type { Oms2Tab } from '$lib/entities/order/oms2-order-list';
 	import FilterPopup from './FilterPopup.svelte';
-	export let oType: OrderStatus;
+	export let tab: Oms2Tab;
 
 	const i18nStore = getContext<I18nStore>('i18n');
 	let disabled: boolean = true;
@@ -95,7 +95,7 @@
 				>
 			{/if}
 		</ssk-button>
-		<FilterPopup bind:disabled {oType} />
+		<FilterPopup bind:disabled {tab} />
 	</div>
 </div>
 
@@ -116,5 +116,17 @@
 		--border-color: var(--ssk-colors-gray-200);
 		--gap: 0.5rem;
 		width: 358px;
+	}
+
+	/* Tablet/mobile: search takes the row, filter button sits beside it */
+	@media (max-width: 767px) {
+		.input-container {
+			gap: var(--spacing-2, 8px);
+		}
+		ssk-input {
+			flex: 1;
+			width: auto;
+			min-width: 0;
+		}
 	}
 </style>

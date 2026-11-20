@@ -1,10 +1,20 @@
 <script lang="ts">
-	import { listOrder, orderList, type Tasks } from '$stores/order/order';
+	import { loadOms2Orders, oms2OrderList } from '$stores/order/oms2-order-list';
+	import {
+		FulfillmentType,
+		Oms2OrderStatus,
+		Oms2PaymentStatus,
+		Oms2Tab,
+		StockState
+	} from '$lib/entities/order/oms2-order-list';
+	import { ORDER_TABS, toOms2Tab } from './order-tab';
 
 	import { currentLanguage } from '$stores/i18n';
 	import { ErrorCode } from '$lib/entities/error/error';
 	import {
 		convertFilterToQueryParams,
+		countActiveFilters,
+		FILTER_QUERY_KEYS,
 		hasFilterChanged,
 		oFilter,
 		setDefaultOrderFilter,
@@ -19,7 +29,6 @@
 	import { get } from 'svelte/store';
 	import OrderSearch from './OrderSearch.svelte';
 	import OrderTable from './Table/OrderTable.svelte';
-	import { OrderStatus } from './filterHandler';
 	import {
 		delimitedQuery,
 		getVarFromQuery as extractQueryParams,
@@ -44,19 +53,14 @@
 
 	const location = useLocation();
 
-	let statuses: string[] = [];
-	let activeTab: OrderStatus = OrderStatus.all,
+	let activeTab: Oms2Tab = Oms2Tab.All,
 		currentPage: number = 1,
 		rowsPerPage: number = 10;
 
-	let orderCounter: Record<OrderStatus, number> = {
-		all: 0,
-		processing: 0,
-		completed: 0,
-		cancel: 0
-	};
+	// Tab counts + unknown-status count come straight from the list source.
+	$: orderCounter = $oms2OrderList.tabCounts;
+	$: unknownCount = $oms2OrderList.unknownCount;
 
-	let tasks: Tasks[] = [];
 	let search: string = '';
 	let sDate: string = '';
 	let eDate: string = '';
@@ -68,47 +72,15 @@
 	let lastInitialKey = '';
 	let lastQueryKey = '';
 
-	type Tab = {
-		orderStatus: OrderStatus;
-		i18nHeaderKey: string;
-		testIdHeader: string;
-		testIdCounter: string;
-		badgeColor: string;
-		showCounter?: boolean;
-	};
+	// Pre-OMS2 filter keys — stripped from the URL so old bookmarks don't linger.
+	const LEGACY_QUERY_KEYS = ['paymentType', 'salesChannels', 'couriers'];
 
-	let tabs: Tab[] = [
-		{
-			orderStatus: OrderStatus.all,
-			i18nHeaderKey: 'patona-sellercenter-myorder-tab-all',
-			testIdHeader: 'orders.tab.total',
-			testIdCounter: 'orders.total.text.counter',
-			badgeColor: 'primary'
-		},
-		{
-			orderStatus: OrderStatus.process,
-			i18nHeaderKey: 'patona-sellercenter-myorder-tab-inprogress',
-			testIdHeader: 'orders.tab.inprogress',
-			testIdCounter: 'orders.inprogress.text.counter',
-			badgeColor: 'sky',
-			showCounter: true
-		},
-		{
-			orderStatus: OrderStatus.completed,
-			i18nHeaderKey: 'patona-sellercenter-myorder-tab-completed',
-			testIdHeader: 'orders.tab.success',
-			testIdCounter: 'orders.success.text.counter',
-			badgeColor: 'success'
-		},
-		{
-			orderStatus: OrderStatus.cancel,
-			i18nHeaderKey: 'patona-sellercenter-myorder-tab-canceled',
-			testIdHeader: 'orders.tab.cancel',
-			testIdCounter: 'orders.cancel.text.counter',
-			badgeColor: 'gray',
-			showCounter: true
-		}
-	];
+	// Drop values that aren't valid for the enum (hand-edited / stale URLs).
+	const onlyValid = (values: string[] | undefined, allowed: object) => {
+		const ok = Object.values(allowed) as string[];
+		const v = values?.filter((x) => ok.includes(x));
+		return v?.length ? v : undefined;
+	};
 
 	const applyQueryParams = (searchParams: URLSearchParams) => {
 		const parsed = extractQueryParams(searchParams, {
@@ -122,16 +94,16 @@
 				fallback: 'desc',
 				emptyAsFallback: true
 			}),
-			activeTab: stringQuery<OrderStatus>({
+			activeTab: stringQuery({
 				key: 'tab',
-				fallback: OrderStatus.all,
+				fallback: Oms2Tab.All,
 				emptyAsFallback: true
 			}),
-			total: numberQuery({ key: 'total', fallback: 0 }),
-			paymentStatus: delimitedQuery({ key: 'paymentStatus' }),
-			paymentType: delimitedQuery({ key: 'paymentType' }),
-			salesChannels: delimitedQuery({ key: 'salesChannels' }),
-			couriers: delimitedQuery({ key: 'couriers', decode: true })
+			channels: delimitedQuery({ key: FILTER_QUERY_KEYS.channels, decode: true }),
+			paymentStatuses: delimitedQuery({ key: FILTER_QUERY_KEYS.paymentStatuses }),
+			fulfillments: delimitedQuery({ key: FILTER_QUERY_KEYS.fulfillments }),
+			statuses: delimitedQuery({ key: FILTER_QUERY_KEYS.statuses }),
+			stocks: delimitedQuery({ key: FILTER_QUERY_KEYS.stocks })
 		});
 
 		search = parsed.search;
@@ -140,9 +112,8 @@
 		sDate = parsed.startDate;
 		eDate = parsed.endDate;
 		sortDirection = parsed.sortDirection;
-		activeTab = parsed.activeTab;
+		activeTab = toOms2Tab(parsed.activeTab); // old links (?tab=process/cancel) fall back to All
 
-		$oFilter.total = parsed.total;
 		$oFilter.search = search || undefined;
 		$oFilter.sort = sortDirection || undefined;
 
@@ -152,33 +123,22 @@
 			$oFilter.createdDate = undefined;
 		}
 
-		if (parsed.paymentStatus || parsed.paymentType) {
-			$oFilter.payment = {
-				status: parsed.paymentStatus,
-				type: parsed.paymentType
-			};
-		} else {
-			$oFilter.payment = undefined;
-		}
-
-		$oFilter.salesChannels = parsed.salesChannels;
-
-		$oFilter.couriers = parsed.couriers;
+		$oFilter.channels = parsed.channels?.length ? parsed.channels : undefined;
+		$oFilter.paymentStatuses = onlyValid(parsed.paymentStatuses, Oms2PaymentStatus);
+		$oFilter.fulfillments = onlyValid(parsed.fulfillments, FulfillmentType);
+		$oFilter.statuses = onlyValid(parsed.statuses, Oms2OrderStatus);
+		$oFilter.stocks = onlyValid(parsed.stocks, StockState);
+		// Badge count is derived, never trusted from the URL.
+		$oFilter.total = countActiveFilters($oFilter);
 	};
 
-	const getDefaultParams = () => ({
-		search: '',
+	const getDefaultParams = (): Record<string, string> => ({
+		...convertFilterToQueryParams({ total: 0 }),
+		...Object.fromEntries(LEGACY_QUERY_KEYS.map((k) => [k, ''])),
 		page: '1',
 		rows: '10',
-		startDate: '',
-		endDate: '',
 		dir: 'desc',
-		tab: activeTab,
-		total: '0',
-		paymentStatus: '',
-		paymentType: '',
-		salesChannels: '',
-		couriers: ''
+		tab: activeTab
 	});
 
 	const setQueryParams = (q: Record<string, string>) => {
@@ -201,6 +161,7 @@
 	applyQueryParams(new URLSearchParams(window.location.search));
 	setQueryParams({
 		...convertFilterToQueryParams($oFilter),
+		...Object.fromEntries(LEGACY_QUERY_KEYS.map((k) => [k, ''])),
 		page: currentPage.toString(),
 		rows: rowsPerPage.toString(),
 		tab: activeTab.toString()
@@ -234,8 +195,6 @@
 
 	$: {
 		if ($currentStore?.id) {
-			statuses = getStatusesByTabIndex(activeTab);
-
 			if (get(hasFilterChanged) && currentPage !== 1) {
 				currentPage = 1;
 			}
@@ -253,9 +212,11 @@
 					search: $oFilter.search,
 					sort: $oFilter.sort,
 					createdDate: $oFilter.createdDate,
-					payment: $oFilter.payment,
-					salesChannels: $oFilter.salesChannels,
-					couriers: $oFilter.couriers
+					channels: $oFilter.channels,
+					paymentStatuses: $oFilter.paymentStatuses,
+					fulfillments: $oFilter.fulfillments,
+					statuses: $oFilter.statuses,
+					stocks: $oFilter.stocks
 				})
 			].join('|');
 			const isInitialLoad = initialKey !== lastInitialKey;
@@ -272,99 +233,38 @@
 		}
 	}
 
-	function getStatusesByTabIndex(ot: OrderStatus): string[] {
-		switch (ot) {
-			case OrderStatus.process:
-				return ['pending', 'processing'];
-			case OrderStatus.completed:
-				return ['completed'];
-			case OrderStatus.cancel:
-				return ['canceled'];
-			default:
-				return [];
-		}
-	}
-
 	async function fetchOrders(page: number, rowsPerPage: number) {
 		if (!$currentStore?.id) return;
 
 		await checkPermission();
 		if (!canView) return;
-		tasks = [];
-		let queryParams: Record<string, string> = {};
+		search = $oFilter.search ?? '';
+		sortDirection = $oFilter.sort ?? 'desc';
+		sDate = $oFilter.createdDate?.start ?? '';
+		eDate = $oFilter.createdDate?.end ?? '';
 
-		if ($oFilter.payment) {
-			tasks.push({ name: 'payment', ...$oFilter.payment });
-			queryParams['paymentStatus'] = $oFilter.payment.status?.length
-				? $oFilter.payment.status.join(',')
-				: '';
+		setQueryParams({
+			...convertFilterToQueryParams($oFilter),
+			page: page.toString(),
+			rows: rowsPerPage.toString()
+		});
 
-			queryParams['paymentType'] = $oFilter.payment.type?.length
-				? $oFilter.payment.type.join(',')
-				: '';
-		} else {
-			queryParams['paymentStatus'] = '';
-			queryParams['paymentType'] = '';
-		}
-
-		if ($oFilter.salesChannels) {
-			queryParams['salesChannels'] = $oFilter.salesChannels.length
-				? $oFilter.salesChannels.join(',')
-				: '';
-		} else {
-			queryParams['salesChannels'] = '';
-		}
-
-		if ($oFilter.couriers) {
-			queryParams['couriers'] = $oFilter.couriers.length ? $oFilter.couriers.join(',') : '';
-		} else {
-			queryParams['couriers'] = '';
-		}
-
-		if ($oFilter.createdDate) {
-			sDate = $oFilter.createdDate.start;
-			eDate = $oFilter.createdDate.end;
-			queryParams['startDate'] = sDate || '';
-			queryParams['endDate'] = eDate || '';
-		} else {
-			queryParams['startDate'] = '';
-			queryParams['endDate'] = '';
-		}
-
-		if ($oFilter.search) {
-			search = $oFilter.search;
-			queryParams['search'] = search || '';
-		} else {
-			queryParams['search'] = '';
-		}
-
-		if ($oFilter.sort) {
-			sortDirection = $oFilter.sort;
-			queryParams['dir'] = sortDirection || '';
-		} else {
-			queryParams['dir'] = '';
-		}
-
-		queryParams['total'] = $oFilter.total.toString();
-		queryParams['page'] = page.toString();
-		queryParams['rows'] = rowsPerPage.toString();
-
-		setQueryParams(queryParams);
-
+		// API bypassed (DES-2235): mock source filters/paginates client-side.
 		try {
-			await listOrder(
-				$currentStore?.id,
-				(page - 1) * rowsPerPage,
-				rowsPerPage,
-				sortDirection,
-				statuses,
-				tasks,
-				search,
-				sDate,
-				eDate,
-				$oFilter.salesChannels ?? [],
-				$oFilter.couriers ?? []
-			);
+			await loadOms2Orders({
+				tab: activeTab,
+				page,
+				rows: rowsPerPage,
+				sort: sortDirection,
+				search: search || undefined,
+				startDate: sDate || undefined,
+				endDate: eDate || undefined,
+				channels: $oFilter.channels,
+				paymentStatuses: $oFilter.paymentStatuses as Oms2PaymentStatus[] | undefined,
+				fulfillments: $oFilter.fulfillments as FulfillmentType[] | undefined,
+				statuses: $oFilter.statuses as Oms2OrderStatus[] | undefined,
+				stocks: $oFilter.stocks as StockState[] | undefined
+			});
 		} catch (error) {
 			if (error instanceof AxiosError) {
 				if (error.response?.data?.error === ErrorCode.PermissionDenied) {
@@ -373,14 +273,6 @@
 				}
 			}
 		}
-
-		const { totalCount } = get(orderList);
-		orderCounter = {
-			all: totalCount?.total ?? 0,
-			processing: (totalCount?.totalProcessing ?? 0) + (totalCount?.totalPending ?? 0),
-			cancel: totalCount?.totalCanceled ?? 0,
-			completed: totalCount?.totalCompleted ?? 0
-		};
 	}
 
 	async function checkPermission() {
@@ -395,7 +287,12 @@
 				EntityPermission.ORDERPAYMENTMANAGE,
 				EntityPermission.ORDERUPDATE
 			]);
-			canView = data[EntityPermission.ORDERVIEW];
+			// Checked on its own: IAM may not know oms.order.view yet, and an unknown key
+			// failing the batch would wrongly lock users out (helper turns errors into false).
+			const oms = await checkPermissionsEach(ScopePermissions.patonaStore, $currentStore.id, [
+				EntityPermission.OMSORDERVIEW
+			]);
+			canView = !!oms[EntityPermission.OMSORDERVIEW] || !!data[EntityPermission.ORDERVIEW];
 			canManagePayment = !!data[EntityPermission.ORDERPAYMENTMANAGE];
 			canUpdateOrder = !!data[EntityPermission.ORDERUPDATE];
 		} catch (error) {
@@ -405,7 +302,7 @@
 		}
 	}
 
-	const handleTabButtonClick = (tabIdx: OrderStatus) => {
+	const handleTabButtonClick = (tabIdx: Oms2Tab) => {
 		return () => {
 			if (activeTab === tabIdx) return;
 			activeTab = tabIdx;
@@ -413,23 +310,25 @@
 			currentPage = 1;
 			rowsPerPage = 10;
 
-			// reset filter option
+			// reset filter option (status options differ per tab, so filters never carry over).
+			// Read search before resetting — the old order checked it after it was cleared.
+			const hadSearch = !!$oFilter.search;
 			setDefaultOrderFilter();
-			if ($oFilter.search && $oFilter.search != '') setIsClearSearchOrderFilter(true);
+			if (hadSearch) setIsClearSearchOrderFilter(true);
 			setQueryParams(getDefaultParams());
 		};
 	};
 
 	const shouldShowBadge = (
-		currentTab: OrderStatus,
-		tab: OrderStatus,
+		currentTab: Oms2Tab,
+		tab: Oms2Tab,
 		count: number,
 		showCounter: boolean = false,
 		filter: OrderFilter
 	): boolean => {
 		if (!count) return false;
 
-		if (filter.search || filter.createdDate || filter.payment) {
+		if (filter.search || filter.total > 0) {
 			return tab === currentTab;
 		}
 
@@ -464,22 +363,22 @@
 							data-testid="orders.tab-header"
 						>
 							{#key Object.values(orderCounter).join(',')}
-								{#each tabs as t}
+								{#each ORDER_TABS as t}
 									<ssk-tab-button
-										active={activeTab === t.orderStatus}
-										on:click={handleTabButtonClick(t.orderStatus)}
+										active={activeTab === t.tab}
+										on:click={handleTabButtonClick(t.tab)}
 										data-testid={t.testIdHeader}
 										size="md"
 										align="left"
 										color="primary"
 										buttonwidth="auto"
 									>
-										<ssk-i18n-translate key={t.i18nHeaderKey} lang={$currentLanguage.code} />
+										<ssk-i18n-translate key={t.i18nKey} lang={$currentLanguage.code} />
 										<ssk-badge
 											hidden={!shouldShowBadge(
 												activeTab,
-												t.orderStatus,
-												orderCounter[t.orderStatus],
+												t.tab,
+												orderCounter[t.tab],
 												t.showCounter,
 												$oFilter
 											)}
@@ -487,18 +386,39 @@
 											themecolor={t.badgeColor}
 											data-testid={t.testIdCounter}
 										>
-											{formatAbbreviatedNumber(orderCounter[t.orderStatus])}
+											{formatAbbreviatedNumber(orderCounter[t.tab])}
 										</ssk-badge>
 									</ssk-tab-button>
 								{/each}
 							{/key}
 						</ssk-tab-header>
 
-						<OrderSearch oType={activeTab} />
+						<OrderSearch tab={activeTab} />
 					</div>
 
+					{#if unknownCount > 0 && activeTab === Oms2Tab.All}
+						<div class="unknown-banner" role="status" data-testid="orders.banner.unknown-status">
+							<ssk-icon name="outline-exclamation-triangle" themecolor="warning" size="md"
+							></ssk-icon>
+							<ssk-text size="sm" color="gray.800">
+								<ssk-i18n-translate
+									key="oms.order.banner.unknown"
+									lang={$currentLanguage.code}
+									fallbackLang="default"
+								/>
+								({unknownCount})
+							</ssk-text>
+						</div>
+					{/if}
+
 					{#key activeTab}
-						<OrderTable bind:currentPage bind:rowsPerPage {canManagePayment} {canUpdateOrder} />
+						<OrderTable
+							bind:currentPage
+							bind:rowsPerPage
+							{canManagePayment}
+							{canUpdateOrder}
+							onRetry={() => fetchOrders(currentPage, rowsPerPage)}
+						/>
 					{/key}
 					<SlipReviewModal {canManagePayment} />
 					<EditPaymentModal {canManagePayment} />
@@ -527,5 +447,35 @@
 	.header {
 		padding: 1.5rem;
 		border-bottom: 1px solid var(--ssk-colors-gray-200);
+	}
+
+	/* 5 tabs overflow on narrow screens — scroll the tab strip instead of wrapping */
+	.orders {
+		min-width: 0;
+	}
+	.orders > ssk-tab-header {
+		display: block;
+		overflow-x: auto;
+		scrollbar-width: none;
+	}
+
+	@media (max-width: 767px) {
+		.header {
+			padding: 1rem;
+		}
+		.unknown-banner {
+			margin: 0 1rem 1rem;
+		}
+	}
+
+	.unknown-banner {
+		display: flex;
+		align-items: center;
+		gap: var(--spacing-2, 8px);
+		margin: 0 1.5rem 1rem;
+		padding: var(--spacing-3, 12px) var(--spacing-4, 16px);
+		background: var(--ssk-colors-warning-50);
+		border: 1px solid var(--ssk-colors-warning-200);
+		border-radius: 8px;
 	}
 </style>
