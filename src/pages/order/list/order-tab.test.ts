@@ -78,3 +78,21 @@ describe('fulfillmentBadges', () => {
 		).toBeUndefined();
 	});
 });
+
+describe('channelColor', () => {
+	it('uses brand colour for online sub-channels and DS tokens otherwise', async () => {
+		const { channelColor } = await import('$pages/order/list/order-tab');
+		expect(
+			channelColor({ id: 'a', name: 'LINE', group: ChannelGroup.Online, source: 'line' })
+		).toBe('#06C755');
+		expect(
+			channelColor({ id: 'b', name: 'Shopee', group: ChannelGroup.Online, source: 'shopee' })
+		).toBe('#EE4D2D');
+		expect(channelColor({ id: 'c', name: 'POS', group: ChannelGroup.Store })).toContain(
+			'--ssk-colors-primary'
+		);
+		expect(
+			channelColor({ id: 'd', name: '?', group: ChannelGroup.Online, source: 'new-one' })
+		).toContain('gray');
+	});
+});

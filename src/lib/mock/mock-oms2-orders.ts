@@ -20,10 +20,11 @@ import {
 // Every channel the sale page can produce: POS (per branch), ออนไลน์ × each sub-channel
 // in `salesChannels` (order.ts — same labels + logos), and ลิงก์ (Link Bill).
 const LOGO = '/images/sales-channel';
-const online = (id: string, name: string, logo?: string): Oms2Channel => ({
-	id: `ch-${id}`,
+const online = (source: string, name: string, logo?: string): Oms2Channel => ({
+	id: `ch-${source}`,
 	name,
 	group: ChannelGroup.Online,
+	source,
 	logo: logo ? `${LOGO}/${logo}` : undefined
 });
 const CH: Record<string, Oms2Channel> = {
@@ -37,7 +38,7 @@ const CH: Record<string, Oms2Channel> = {
 	tiktok: online('tiktok', 'TikTok Shop', 'TiktokShop.svg'),
 	lineShopping: online('lineShopping', 'LINE SHOPPING', 'LineShopping.svg'),
 	openApi: online('openApi', 'Open-API', 'Api.svg'),
-	onlineUnknown: online('online-unknown', 'ออนไลน์ (ไม่ระบุ)'),
+	onlineUnknown: online('unknown', 'ออนไลน์ (ไม่ระบุ)'),
 	link: { id: 'ch-link', name: 'ลิงก์', group: ChannelGroup.Link }
 };
 

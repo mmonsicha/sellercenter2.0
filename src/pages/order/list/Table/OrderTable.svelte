@@ -21,7 +21,7 @@
 	} from '$lib/entities/order/oms2-order-list';
 	import {
 		CHANNEL_GROUP_ICON,
-		channelGroupTheme,
+		channelColor,
 		fulfillmentBadges,
 		stockKey,
 		stockTheme,
@@ -335,27 +335,27 @@
 					<ssk-text color="stroke">{order.customerName}</ssk-text>
 				</ssk-table-cell>
 
-				<!-- Sales channel — badge colour by group, label always from data -->
+				<!-- Sales channel — same pill as fulfillment, tinted with the channel's colour
+				     (brand colour for online sub-channels). Name always from data. -->
 				<ssk-table-cell align="left">
-					<ssk-badge
-						variant="subtle"
-						size="md"
-						themecolor={channelGroupTheme(order.channel.group)}
+					<span
+						class="channel-pill"
+						style={`--ch: ${channelColor(order.channel)}`}
 						data-testid={`orders.table-cell.sales-chanel.row.${idx}`}
-						><span class="channel-label"
-							>{#if order.channel.logo}<img
-									class="channel-logo"
-									src={order.channel.logo}
-									alt=""
-									width="14"
-									height="14"
-								/>{:else}<ssk-icon
+					>
+						<span class="channel-dot">
+							{#if order.channel.logo}
+								<img class="channel-logo" src={order.channel.logo} alt="" width="14" height="14" />
+							{:else}
+								<ssk-icon
 									name={CHANNEL_GROUP_ICON[order.channel.group]}
 									size="xs"
 									color="currentcolor"
-								></ssk-icon>{/if}{order.channel.name}</span
-						></ssk-badge
-					>
+								></ssk-icon>
+							{/if}
+						</span>
+						<ssk-text size="sm" color="gray.800" fontweight="medium">{order.channel.name}</ssk-text>
+					</span>
 				</ssk-table-cell>
 
 				<!-- Fulfillment — single type / หลายวิธี (N) / จัดส่งตามที่อยู่ (N กลุ่ม) -->
@@ -648,10 +648,27 @@
 
 	/* Fulfillment pills — same language as the role badges in user management:
 	   outlined pill, circular icon(s) on the left, round action button beside it. */
-	.channel-label {
+	/* Channel pill: same shape as .fulfill-pill, tinted by --ch (set per row). */
+	.channel-pill {
 		display: inline-flex;
 		align-items: center;
-		gap: 4px;
+		gap: 6px;
+		padding: 3px 12px 3px 4px;
+		border: 1px solid color-mix(in srgb, var(--ch) 45%, white);
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--ch) 8%, white);
+		white-space: nowrap;
+	}
+	.channel-dot {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: var(--ssk-colors-white, #fff);
+		color: var(--ch);
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ch) 30%, white);
 	}
 	.channel-logo {
 		width: 14px;

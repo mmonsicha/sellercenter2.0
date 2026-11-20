@@ -6,6 +6,7 @@ import {
 	FulfillmentType,
 	StockState,
 	fulfillmentLabel,
+	type Oms2Channel,
 	type Oms2Fulfillment,
 	Oms2OrderStatus,
 	Oms2PaymentStatus,
@@ -161,4 +162,24 @@ export const CHANNEL_GROUP_ICON: Record<ChannelGroup, string> = {
 	[ChannelGroup.Store]: 'outline-building-storefront',
 	[ChannelGroup.Online]: 'outline-globe-alt',
 	[ChannelGroup.Link]: 'outline-link'
+};
+
+// Channel pill colour. Online sub-channels use their brand colour (third-party brand
+// colours have no DS token, so they live here as data); POS / ลิงก์ / unknown use DS tokens.
+const CHANNEL_BRAND_COLOR: Record<string, string> = {
+	line: '#06C755',
+	lineShopping: '#06C755',
+	facebook: '#1877F2',
+	instagram: '#E1306C',
+	shopee: '#EE4D2D',
+	lazada: '#0F146D',
+	tiktok: '#111111',
+	openApi: 'var(--ssk-colors-gray-600)',
+	unknown: 'var(--ssk-colors-gray-500)'
+};
+
+export const channelColor = (c: Oms2Channel): string => {
+	if (c.group === ChannelGroup.Store) return 'var(--ssk-colors-primary-500)';
+	if (c.group === ChannelGroup.Link) return 'var(--ssk-colors-sky-500, #0EA5E9)';
+	return CHANNEL_BRAND_COLOR[c.source ?? 'unknown'] ?? CHANNEL_BRAND_COLOR.unknown;
 };

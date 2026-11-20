@@ -75,6 +75,9 @@ export interface Oms2Channel {
 	id: string;
 	name: string;
 	group: ChannelGroup;
+	// Online sub-channel key — same values as the sale page's `salesChannels` (order.ts):
+	// line, facebook, instagram, shopee, lazada, tiktok, lineShopping, openApi, unknown.
+	source?: string;
 	// Online sub-channel logo, same assets the sale page uses (salesChannels in order.ts,
 	// /images/sales-channel/*.svg). POS / ลิงก์ use the group icon instead.
 	logo?: string;
