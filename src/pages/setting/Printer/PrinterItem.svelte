@@ -169,7 +169,7 @@
 
 	.printer-name {
 		font-weight: 500;
-		font-size: 24px;
+		font-size: var(--ssk-font-size-md);
 		line-height: 20px;
 	}
 

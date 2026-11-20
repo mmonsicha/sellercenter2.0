@@ -3254,11 +3254,11 @@
 	}
 
 	.selector-title {
-		/* 13px, not the 14px step: the DS face spends 32px on its own padding plus ~22px
+		/* xs, not the sm step (was 13px vs 14px under the Noto scale): the DS face spends 32px on its own padding plus ~22px
 		   on its chevron, leaving ~90px of a 175px card for the label, and
 		   "จัดส่งจากหน้าร้าน" needs 97px at 14px. One step down fits every label whole —
 		   both cards keep the same size, so they still read as one pair. */
-		font-size: 13px;
+		font-size: var(--ssk-font-size-xs);
 		font-weight: 500;
 		line-height: 1.35;
 		color: var(--ssk-colors-gray-800);

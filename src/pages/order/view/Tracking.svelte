@@ -162,7 +162,7 @@
 
 	.time {
 		color: #777;
-		font-size: 14px;
+		font-size: var(--ssk-font-size-sm);
 	}
 
 	/* สถานะสีต่าง ๆ */
@@ -170,7 +170,7 @@
 		display: inline-block;
 		padding: 2px 8px;
 		border-radius: 12px;
-		font-size: 12px;
+		font-size: var(--ssk-font-size-xs);
 		margin-left: 5px;
 		color: #fff;
 	}

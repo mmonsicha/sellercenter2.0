@@ -20,7 +20,7 @@
 
 <style>
 	ssk-text.title > span {
-		font-size: 36px;
+		font-size: var(--ssk-font-size-2xl);
 	}
 	.qr-container {
 		text-align: center;
@@ -49,7 +49,7 @@
 
 	@media only screen and (max-width: 768px) {
 		ssk-text.title > span {
-			font-size: 24px;
+			font-size: var(--ssk-font-size-md);
 		}
 
 		.line-button {

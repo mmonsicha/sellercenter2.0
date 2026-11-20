@@ -143,7 +143,7 @@
 		width: 2.5rem;
 		height: 44px;
 		padding: 0.25rem;
-		font-size: 14px;
+		font-size: var(--ssk-font-size-sm);
 	}
 	.quantity-arrow-minus,
 	.quantity-arrow-plus {
@@ -155,7 +155,7 @@
 		border: 1px solid var(--ssk-colors-gray-100);
 		padding: 0.75rem 0.5rem;
 		border-radius: 8px;
-		font-size: 16px;
+		font-size: var(--ssk-font-size-md);
 	}
 
 	.quantity-arrow-minus.disabled {

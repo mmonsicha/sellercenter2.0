@@ -1,5 +1,7 @@
 body {
 	margin: 0;
+	/* Set by $lib/font-profile for the noto profile; otherwise inherit browser/DS default. */
+	font-family: var(--app-font-family, 'DB HeaventRounded', Roboto, sans-serif);
 	padding: 0;
 }
 

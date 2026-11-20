@@ -226,7 +226,7 @@
 
 	.tooltip {
 		padding: 0 1rem;
-		font-size: 18px;
+		font-size: var(--ssk-font-size-xs);
 	}
 
 	.grid {

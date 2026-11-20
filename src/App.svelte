@@ -31,6 +31,7 @@
 	import { loadPrinterConfig } from '$stores/thermal-printer';
 	import { toast } from '$stores/toast';
 	import { IdbI18nStore, InMemoryToastStore, applyTheme } from '@sellsuki-org/sellsuki-components';
+	import { fontProfileTheme } from '$lib/font-profile';
 	import { onMount, setContext } from 'svelte';
 	import { Route, Router, navigate } from 'svelte-routing';
 
@@ -93,7 +94,9 @@
 				'100': '#F9FAFB',
 				'500': '#6B7280'
 			}
-		}
+		},
+		// Font family + size scale per VITE_FONT_PROFILE — see $lib/font-profile.
+		...fontProfileTheme
 	});
 
 	const i18nStore = new IdbI18nStore('ssk-i18n');

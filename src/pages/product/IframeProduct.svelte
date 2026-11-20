@@ -202,7 +202,7 @@
 
 	span {
 		color: var(--ssk-colors-secondary-500);
-		font-size: 20px;
+		font-size: var(--ssk-font-size-sm);
 		padding-bottom: 1rem;
 	}
 

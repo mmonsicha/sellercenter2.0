@@ -2338,7 +2338,7 @@
 	}
 
 	.summary-collapsed-total {
-		font-size: 20px;
+		font-size: var(--ssk-font-size-xl);
 		font-weight: 700;
 		color: var(--ssk-colors-primary-500, var(--ssk-colors-primary));
 	}

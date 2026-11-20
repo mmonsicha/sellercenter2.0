@@ -126,7 +126,7 @@
 
 	.text-title {
 		font-weight: 400;
-		font-size: 28px;
+		font-size: var(--ssk-font-size-xl);
 	}
 
 	.divider {
@@ -139,7 +139,7 @@
 		align-items: center;
 		justify-content: center;
 		gap: 12px;
-		font-size: 24px;
+		font-size: var(--ssk-font-size-md);
 		line-height: 16px;
 	}
 

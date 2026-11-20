@@ -104,7 +104,7 @@
 
 	.text-title {
 		font-weight: 400;
-		font-size: 36px;
+		font-size: var(--ssk-font-size-2xl);
 	}
 
 	.content {

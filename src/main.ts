@@ -1,5 +1,6 @@
 import '@sellsuki-org/sellsuki-components';
 import '@sellsuki-org/sellsuki-components/style.css';
+import { loadFontProfile } from '$lib/font-profile';
 import App from './App.svelte';
 import './main.css';
 
@@ -30,6 +31,9 @@ if (basePath) {
 		return replaceState.call(this, state, title, withBase(url));
 	};
 }
+
+// Before mount so the noto profile's font files start loading with the first paint.
+loadFontProfile();
 
 const app = new App({
 	target: document.getElementById('app')!

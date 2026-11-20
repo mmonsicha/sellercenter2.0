@@ -144,7 +144,7 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 
-		font-size: 24px;
+		font-size: var(--ssk-font-size-md);
 		color: var(--ssk-colors-gray-800);
 	}
 

@@ -460,7 +460,7 @@
 		width: 28px;
 		height: 28px;
 		border-radius: 9999px;
-		font-size: 13px;
+		font-size: var(--ssk-font-size-xs);
 		font-weight: 700;
 		flex-shrink: 0;
 		background: var(--ssk-colors-gray-100);
