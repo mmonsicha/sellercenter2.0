@@ -67,7 +67,7 @@
 		'48px',
 		'minmax(170px, 1fr)', // serial — smaller text now
 		'minmax(140px, 1fr)',
-		'minmax(190px, 1fr)', // channel badge, one line (e.g. "หน้าร้าน สาขาสยาม")
+		'minmax(190px, 1fr)', // channel badge, one line (e.g. "LINE SHOPPING")
 		'minmax(270px, 1fr)', // fulfillment pills + toggle (longest: จัดส่งเข้าระบบ (ดิจิทัล))
 		'minmax(120px, 1fr)',
 		'minmax(190px, 1fr)', // payment badge, one line (e.g. "รอเก็บเงินปลายทาง")

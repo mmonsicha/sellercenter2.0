@@ -60,8 +60,8 @@ describe('queryOms2Orders', () => {
 
 	it('channels come from data and cover the sale page channels', () => {
 		const ch = mockOms2Channels();
-		// POS (2 branches) + 9 online sub-channels + ลิงก์
-		expect(ch.length).toBe(12);
+		// POS (one per branch; list is branch-scoped) + 9 online sub-channels + ลิงก์
+		expect(ch.length).toBe(11);
 		expect(new Set(ch.map((c) => c.group))).toEqual(
 			new Set([ChannelGroup.Store, ChannelGroup.Online, ChannelGroup.Link])
 		);

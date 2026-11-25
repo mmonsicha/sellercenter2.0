@@ -40,7 +40,7 @@ export enum Oms2Tab {
 // Mirrors the sale page's 3 channels (SaleChannelUI: POS / ONLINE / LINK_BILL).
 // Drives badge colour + icon only — the channel NAME always comes from data.
 export enum ChannelGroup {
-	Store = 'store', // POS (หน้าร้าน) — one channel per branch
+	Store = 'store', // POS (หน้าร้าน) — one channel per branch; shown as just "POS" (list is branch-scoped)
 	Online = 'online', // ออนไลน์ — sub-channel: LINE, Facebook, Shopee, TikTok Shop ...
 	Link = 'link' // ลิงก์ (Link Bill)
 }

@@ -17,7 +17,7 @@ import {
 	type Oms2OrderRow
 } from '$lib/entities/order/oms2-order-list';
 
-// Every channel the sale page can produce: POS (per branch), ออนไลน์ × each sub-channel
+// Every channel the sale page can produce: POS (one per branch — the list is scoped to the current branch, so just "POS"), ออนไลน์ × each sub-channel
 // in `salesChannels` (order.ts — same labels + logos), and ลิงก์ (Link Bill).
 const LOGO = '/images/sales-channel';
 const online = (source: string, name: string, logo?: string): Oms2Channel => ({
@@ -28,8 +28,7 @@ const online = (source: string, name: string, logo?: string): Oms2Channel => ({
 	logo: logo ? `${LOGO}/${logo}` : undefined
 });
 const CH: Record<string, Oms2Channel> = {
-	pos: { id: 'ch-pos-siam', name: 'POS สาขาสยาม', group: ChannelGroup.Store },
-	posAri: { id: 'ch-pos-ari', name: 'POS สาขาอารีย์', group: ChannelGroup.Store },
+	pos: { id: 'ch-pos', name: 'POS', group: ChannelGroup.Store },
 	line: online('line', 'LINE', 'Line.svg'),
 	web: online('facebook', 'Facebook', 'Facebook.svg'),
 	instagram: online('instagram', 'Instagram', 'Instagram.svg'),
@@ -244,7 +243,7 @@ const EXTRAS: Extra[] = [
 	[
 		12,
 		'ศิริพร แก้วใส',
-		CH.posAri,
+		CH.pos,
 		[F.PickupLater],
 		0,
 		1590,
@@ -267,7 +266,7 @@ const EXTRAS: Extra[] = [
 		A.View,
 		1
 	],
-	[14, 'ร้านกาแฟบ้านสวน', CH.posAri, [F.Service], 0, 3500, P.Paid, S.Confirmed, K.None, A.View, 1],
+	[14, 'ร้านกาแฟบ้านสวน', CH.pos, [F.Service], 0, 3500, P.Paid, S.Confirmed, K.None, A.View, 1],
 	[15, 'ณัฐวุฒิ ใจกว้าง', CH.pos, [F.Digital], 0, 499, P.Paid, S.Completed, K.None, A.View, 2],
 	[
 		16,
@@ -299,7 +298,7 @@ const EXTRAS: Extra[] = [
 	[
 		18,
 		'อรุณ สว่างจิต',
-		CH.posAri,
+		CH.pos,
 		[F.PickupNow, F.Service],
 		0,
 		5400,
@@ -325,7 +324,7 @@ const EXTRAS: Extra[] = [
 	[
 		20,
 		'สุภาวดี มีสุข',
-		CH.posAri,
+		CH.pos,
 		[F.PickupNow, F.PickupLater],
 		0,
 		1780,
