@@ -37,8 +37,7 @@ describe('order-tab presentation', () => {
 
 	it('fulfillment display', () => {
 		expect(fulfillmentDisplay({ types: [FulfillmentType.Shipping], shippingGroups: 2 })).toEqual({
-			key: 'oms.order.fulfillment.groups',
-			count: 2
+			key: 'oms.order.fulfillment.shipping'
 		});
 		expect(
 			fulfillmentDisplay({
@@ -58,7 +57,7 @@ describe('order-tab presentation', () => {
 });
 
 describe('fulfillmentBadges', () => {
-	it('one badge per method in data order, groups only on shipping', () => {
+	it('one badge per method in data order, no address-group count', () => {
 		const b = fulfillmentBadges({
 			types: [FulfillmentType.PickupLater, FulfillmentType.Shipping, FulfillmentType.Digital],
 			shippingGroups: 2
@@ -68,14 +67,8 @@ describe('fulfillmentBadges', () => {
 			FulfillmentType.Shipping,
 			FulfillmentType.Digital
 		]);
-		expect(b.map((x) => x.groups)).toEqual([undefined, 2, undefined]);
+		expect(b.every((x) => !('groups' in x))).toBe(true);
 		expect(b[1].icon).toBe('outline-truck');
-	});
-
-	it('single shipping group has no group count', () => {
-		expect(
-			fulfillmentBadges({ types: [FulfillmentType.Shipping], shippingGroups: 1 })[0].groups
-		).toBeUndefined();
 	});
 });
 
@@ -89,8 +82,8 @@ describe('channelColor', () => {
 			channelColor({ id: 'b', name: 'Shopee', group: ChannelGroup.Online, source: 'shopee' })
 		).toBe('#EE4D2D');
 		expect(channelColor({ id: 'c', name: 'POS', group: ChannelGroup.Store })).toContain(
-			'--ssk-colors-primary'
-		);
+			'--ssk-colors-gray'
+		); // PO U8: neutral, never Shopee-orange
 		expect(
 			channelColor({ id: 'd', name: '?', group: ChannelGroup.Online, source: 'new-one' })
 		).toContain('gray');

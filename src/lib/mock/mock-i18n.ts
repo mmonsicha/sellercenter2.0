@@ -51,8 +51,8 @@ export const KEYWORDS: Record<string, Record<string, string>> = {
 	/* ------------------------------------------- OMS 2.0 order list (DES-2235) */
 	'oms.order.tab.refund': t('คืนเงิน', 'Refund'),
 	'oms.order.banner.unknown': t(
-		'มีคำสั่งซื้อที่ระบบไม่รู้จักสถานะ แสดงเฉพาะในแท็บ "ทั้งหมด" กรุณาติดต่อผู้ดูแลระบบ',
-		'Some orders have an unrecognised status. They appear only under "All" — please contact support.'
+		'มีคำสั่งซื้อที่ระบบไม่ทราบสถานะ ติดต่อทีมงานผ่านเมนูติดต่อเรา พร้อมเลขคำสั่งซื้อ',
+		'Some orders have an unknown status. Contact us via the Contact menu with the order number.'
 	),
 	'oms.order.status.created': t('สร้างแล้ว', 'Created'),
 	'oms.order.status.confirmed': t('ยืนยันแล้ว', 'Confirmed'),
@@ -62,7 +62,7 @@ export const KEYWORDS: Record<string, Record<string, string>> = {
 	'oms.order.status.delivered': t('ส่งมอบแล้ว', 'Delivered'),
 	'oms.order.status.completed': t('สำเร็จ', 'Completed'),
 	'oms.order.status.cancelled': t('ยกเลิก', 'Cancelled'),
-	'oms.order.status.reversed': t('ย้อนรายการ', 'Reversed'),
+	'oms.order.status.reversed': t('ย้อนรายการ', 'Reversed'), // PO Q1: not "คืนสินค้า" (services reverse too)
 	'oms.order.status.refunded': t('คืนเงินแล้ว', 'Refunded'),
 	'oms.order.status.unknown': t('ไม่ทราบสถานะ', 'Unknown'),
 	'oms.order.payment.unpaid': t('รอชำระเงิน', 'Unpaid'),
@@ -73,11 +73,10 @@ export const KEYWORDS: Record<string, Record<string, string>> = {
 	'oms.order.payment.overpaid': t('ชำระเกิน', 'Overpaid'),
 	'oms.order.payment.refunding': t('กำลังคืนเงิน', 'Refunding'),
 	'oms.order.payment.refunded': t('คืนเงินแล้ว', 'Refunded'),
-	'oms.order.payment.voided': t('ยกเลิกการชำระ', 'Voided'),
+	'oms.order.payment.voided': t('ยกเลิกการชำระ', 'Payment cancelled'), // PO Q8: one word for void + cancelled
 	'oms.order.action.view': t('ดูรายละเอียด', 'View'),
 	'oms.order.action.record_payment': t('บันทึกการชำระ', 'Record payment'),
 	'oms.order.action.record_cod': t('บันทึกยอด COD', 'Record COD'),
-	'oms.order.action.review_slip': t('ตรวจสอบสลิป', 'Review slip'),
 	'oms.order.header.fulfillment': t('วิธีรับสินค้า', 'Fulfillment'),
 	'oms.order.header.stock': t('สต็อก', 'Stock'),
 	// Same wording as the sale page (Cart.svelte fullfilmentMeta / groupKindLabel).
@@ -96,6 +95,33 @@ export const KEYWORDS: Record<string, Record<string, string>> = {
 	'oms.order.payment_method.transfer': t('โอนเงิน', 'Bank transfer'),
 	'oms.order.payment_method.card': t('บัตร', 'Card'),
 	// Same 3 channel names as the sale page channel switcher.
+	// Per-group task steps (PO Q10) — named by job type, e.g. service says "กำลังให้บริการ".
+	'oms.order.step.queued': t('รอดำเนินการ', 'Queued'),
+	'oms.order.step.pickup_at_store': t('ยื่นของให้ลูกค้าแล้ว', 'Handed over'),
+	'oms.order.step.preparing': t('กำลังเตรียมของ', 'Preparing'),
+	'oms.order.step.ready_for_pickup': t('พร้อมให้ลูกค้ารับ', 'Ready for pickup'),
+	'oms.order.step.pickedup_at_store': t('ลูกค้ารับแล้ว', 'Picked up'),
+	'oms.order.step.packed': t('แพ็กแล้ว', 'Packed'),
+	'oms.order.step.shipped': t('กำลังขนส่ง', 'In transit'),
+	'oms.order.step.delivered': t('ส่งมอบแล้ว', 'Delivered'),
+	'oms.order.step.issuing': t('กำลังออกสิทธิ์', 'Issuing'),
+	'oms.order.step.revoked': t('เพิกถอนสิทธิ์แล้ว', 'Revoked'),
+	'oms.order.step.scheduled': t('นัดหมายแล้ว', 'Scheduled'),
+	'oms.order.step.in_progress': t('กำลังให้บริการ', 'In service'),
+	'oms.order.step.done': t('ให้บริการเสร็จ', 'Service done'),
+	'oms.order.step.no_show': t('ลูกค้าไม่มาตามนัด', 'No-show'),
+	'oms.order.step.service_interrupted': t('บริการถูกขัดจังหวะ', 'Interrupted'),
+	'oms.order.step.returning': t('กำลังส่งคืน', 'Returning'),
+	'oms.order.step.returned': t('คืนแล้ว', 'Returned'),
+	'oms.order.step.reversed': t('ย้อนรายการ', 'Reversed'),
+	'oms.order.step.cancelled': t('ยกเลิก', 'Cancelled'),
+	// "งานที่ต้องทำต่อ" filter (PO Q16)
+	'oms.order.filter.next_action': t('งานที่ต้องทำต่อ', 'Next action'),
+	'oms.order.next_action.awaiting_payment': t('รอชำระเงิน', 'Awaiting payment'),
+	'oms.order.next_action.awaiting_delivery': t('รอส่งมอบ', 'Awaiting delivery'),
+	'oms.order.next_action.awaiting_cod': t('รอรับเงิน COD', 'Awaiting COD'),
+	'oms.order.next_action.awaiting_stock': t('รอสต็อก', 'Awaiting stock'),
+	'oms.order.next_action.needs_attention': t('ต้องตรวจดู', 'Needs attention'),
 	'oms.order.filter.channel_group.store': t('POS', 'POS'),
 	'oms.order.filter.channel_group.online': t('ออนไลน์', 'Online'),
 	'oms.order.filter.channel_group.link': t('ลิงก์', 'Link'),

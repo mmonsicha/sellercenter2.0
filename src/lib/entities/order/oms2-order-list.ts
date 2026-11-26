@@ -63,12 +63,52 @@ export enum StockState {
 	None = 'none' // "—"
 }
 
-// Row actions are decided by the BE; FE only renders them. No Deliver action in 2.0.
+// Row actions are decided by the BE; FE only renders them. PO (DES-2235 Q13): the list
+// only carries money actions — every task step is advanced on the order detail page.
 export enum Oms2RowAction {
 	View = 'view',
 	RecordPayment = 'record_payment',
-	RecordCod = 'record_cod',
-	ReviewSlip = 'review_slip'
+	RecordCod = 'record_cod'
+}
+
+// Per-group task step, from the FigJam fulfilment task templates (one vocabulary for all
+// 5 types; each type only uses its own subset). Shown when a row is expanded (PO Q10).
+export enum FulfillmentStep {
+	Queued = 'queued',
+	PickupAtStore = 'pickup_at_store', // รับทันที: ยื่นของให้ลูกค้า
+	Preparing = 'preparing',
+	ReadyForPickup = 'ready_for_pickup',
+	PickedUpAtStore = 'pickedup_at_store',
+	Packed = 'packed',
+	Shipped = 'shipped',
+	Delivered = 'delivered',
+	Issuing = 'issuing', // ดิจิทัล: ออก license
+	Revoked = 'revoked',
+	Scheduled = 'scheduled', // บริการ: นัดแล้ว
+	InProgress = 'in_progress',
+	Done = 'done',
+	NoShow = 'no_show',
+	ServiceInterrupted = 'service_interrupted',
+	Returning = 'returning',
+	Returned = 'returned',
+	Reversed = 'reversed',
+	Cancelled = 'cancelled'
+}
+
+// Steps the list highlights in a warning colour (PO Q4) — the order status alone
+// ("พร้อมส่งมอบ" / "กำลังจัดส่ง") doesn't reveal that something went wrong.
+export const WARN_STEPS: FulfillmentStep[] = [
+	FulfillmentStep.NoShow,
+	FulfillmentStep.ServiceInterrupted
+];
+
+// "งานที่ต้องทำต่อ" filter (PO Q16), replaces the proposed queue chips.
+export enum NextAction {
+	AwaitingPayment = 'awaiting_payment', // รอชำระเงิน
+	AwaitingDelivery = 'awaiting_delivery', // รอส่งมอบ
+	AwaitingCod = 'awaiting_cod', // รอรับเงิน COD
+	AwaitingStock = 'awaiting_stock', // รอสต็อก
+	NeedsAttention = 'needs_attention' // ต้องตรวจดู
 }
 
 export interface Oms2Channel {
@@ -85,7 +125,10 @@ export interface Oms2Channel {
 
 export interface Oms2Fulfillment {
 	types: FulfillmentType[]; // distinct types; length > 1 → "หลายวิธี (N)"
-	shippingGroups: number; // > 1 → "จัดส่งตามที่อยู่ (N กลุ่ม)"
+	shippingGroups: number; // detail page only — the list shows method count, not address groups
+	// Current task step per type (the slowest group of that type). Optional so a row
+	// without step data still renders.
+	steps?: Partial<Record<FulfillmentType, FulfillmentStep>>;
 }
 
 export interface Oms2Payment {
@@ -132,6 +175,57 @@ export const statusInTab = (status: Oms2OrderStatus, tab: Oms2Tab): boolean => {
 	return allowed === null || allowed.includes(status);
 };
 
+// Tab membership for a row. The refund tab also holds orders whose refund is in flight
+// (PO U4): payment "refunding" keeps the order status unchanged, so status alone misses them.
+export const orderInTab = (
+	o: { status: Oms2OrderStatus; paymentStatus: Oms2PaymentStatus },
+	tab: Oms2Tab
+): boolean =>
+	statusInTab(o.status, tab) ||
+	(tab === Oms2Tab.Refund && o.paymentStatus === Oms2PaymentStatus.Refunding);
+
+const PRE_DELIVERY: Oms2OrderStatus[] = [
+	Oms2OrderStatus.Confirmed,
+	Oms2OrderStatus.Preparing,
+	Oms2OrderStatus.ReadyToDeliver
+];
+const CLOSED: Oms2OrderStatus[] = [
+	Oms2OrderStatus.Completed,
+	Oms2OrderStatus.Cancelled,
+	Oms2OrderStatus.Reversed,
+	Oms2OrderStatus.Refunded
+];
+
+export const hasWarnStep = (f: Oms2Fulfillment): boolean =>
+	Object.values(f.steps ?? {}).some((s) => s && WARN_STEPS.includes(s));
+
+// Which "งานที่ต้องทำต่อ" buckets a row falls in (a row can be in several).
+export const nextActionsOf = (o: Oms2OrderRow): NextAction[] => {
+	const out: NextAction[] = [];
+	const open = !CLOSED.includes(o.status);
+	if (
+		open &&
+		[
+			Oms2PaymentStatus.Unpaid,
+			Oms2PaymentStatus.PendingReview,
+			Oms2PaymentStatus.PartiallyPaid
+		].includes(o.paymentStatus)
+	)
+		out.push(NextAction.AwaitingPayment);
+	if (PRE_DELIVERY.includes(o.status)) out.push(NextAction.AwaitingDelivery);
+	if (o.paymentStatus === Oms2PaymentStatus.CodPending) out.push(NextAction.AwaitingCod);
+	if (open && o.stock === StockState.Partial) out.push(NextAction.AwaitingStock);
+	// Assumption (to confirm with PO): "ต้องตรวจดู" = unknown status, slip waiting for
+	// review, or a service group stuck on no-show / interruption.
+	if (
+		o.status === Oms2OrderStatus.Unknown ||
+		o.paymentStatus === Oms2PaymentStatus.PendingReview ||
+		hasWarnStep(o.fulfillment)
+	)
+		out.push(NextAction.NeedsAttention);
+	return out;
+};
+
 export const toOrderStatus = (raw?: string): Oms2OrderStatus =>
 	(Object.values(Oms2OrderStatus) as string[]).includes(raw ?? '')
 		? (raw as Oms2OrderStatus)
@@ -140,14 +234,11 @@ export const toOrderStatus = (raw?: string): Oms2OrderStatus =>
 export type FulfillmentLabel =
 	| { kind: 'single'; type: FulfillmentType }
 	| { kind: 'multi'; count: number }
-	| { kind: 'groups'; count: number }
 	| { kind: 'none' };
 
 export const fulfillmentLabel = (f: Oms2Fulfillment): FulfillmentLabel => {
 	if (f.types.length > 1) return { kind: 'multi', count: f.types.length };
 	if (f.types.length === 0) return { kind: 'none' };
-	if (f.types[0] === FulfillmentType.Shipping && f.shippingGroups > 1)
-		return { kind: 'groups', count: f.shippingGroups };
 	return { kind: 'single', type: f.types[0] };
 };
 
@@ -164,6 +255,7 @@ export interface Oms2ListQuery {
 	fulfillments?: FulfillmentType[];
 	statuses?: Oms2OrderStatus[];
 	stocks?: StockState[];
+	nextActions?: NextAction[];
 }
 
 export interface Oms2ListResult {

@@ -9,8 +9,10 @@ import {
 	Oms2RowAction,
 	Oms2Tab,
 	StockState,
+	FulfillmentStep,
 	TAB_STATUSES,
-	statusInTab,
+	nextActionsOf,
+	orderInTab,
 	type Oms2Channel,
 	type Oms2ListQuery,
 	type Oms2ListResult,
@@ -97,7 +99,7 @@ const SEEDS: Seed[] = [
 		status: Oms2OrderStatus.Confirmed,
 		fulfillment: { types: [FulfillmentType.Shipping], shippingGroups: 3 },
 		stock: StockState.Reserved,
-		actions: [Oms2RowAction.ReviewSlip],
+		actions: [Oms2RowAction.View],
 		payments: [pay('p3', 2350, 'transfer', Oms2PaymentStatus.PendingReview, 1)],
 		daysAgo: 1
 	},
@@ -372,7 +374,7 @@ const EXTRAS: Extra[] = [
 		P.PendingReview,
 		S.Confirmed,
 		K.Reserved,
-		A.ReviewSlip,
+		A.View,
 		2
 	],
 	[25, 'Partner API #12', CH.openApi, [F.Digital], 0, 299, P.Paid, S.Completed, K.None, A.View, 3],
@@ -470,8 +472,114 @@ const extraSeed = ([
 
 SEEDS.push(...EXTRAS.map(extraSeed));
 
+// Service exceptions the PO asked to surface (DES-2235 Q4): the order status hides them.
+SEEDS.push(
+	extraSeed([
+		32,
+		'ร้านนวดสบายใจ',
+		CH.pos,
+		[F.Service],
+		0,
+		1200,
+		P.Paid,
+		S.ReadyToDeliver,
+		K.None,
+		A.View,
+		1
+	]),
+	extraSeed([
+		33,
+		'คุณบี ติดตั้งแอร์',
+		CH.line,
+		[F.Shipping, F.Service],
+		1,
+		15900,
+		P.Paid,
+		S.Delivering,
+		K.Deducted,
+		A.View,
+		2
+	])
+);
+
+// Task step per fulfilment type, derived from the order status using the FigJam
+// task→order mapping (the slowest group sets the order status, so this is that group).
+const S2 = FulfillmentStep;
+const STEP_BY_STATUS: Record<FulfillmentType, Partial<Record<Oms2OrderStatus, FulfillmentStep>>> = {
+	[F.PickupNow]: {
+		delivered: S2.PickupAtStore,
+		completed: S2.PickupAtStore,
+		reversed: S2.Returned,
+		refunded: S2.Returned,
+		cancelled: S2.Cancelled
+	},
+	[F.PickupLater]: {
+		preparing: S2.Preparing,
+		ready_to_deliver: S2.ReadyForPickup,
+		delivering: S2.ReadyForPickup,
+		delivered: S2.PickedUpAtStore,
+		completed: S2.PickedUpAtStore,
+		reversed: S2.Returned,
+		refunded: S2.Returned,
+		cancelled: S2.Cancelled
+	},
+	[F.Shipping]: {
+		preparing: S2.Preparing,
+		ready_to_deliver: S2.Packed,
+		delivering: S2.Shipped,
+		delivered: S2.Delivered,
+		completed: S2.Delivered,
+		reversed: S2.Returning,
+		refunded: S2.Returned,
+		cancelled: S2.Cancelled
+	},
+	[F.Digital]: {
+		preparing: S2.Issuing,
+		ready_to_deliver: S2.Issuing,
+		delivering: S2.Issuing,
+		delivered: S2.Delivered,
+		completed: S2.Delivered,
+		reversed: S2.Revoked,
+		refunded: S2.Revoked,
+		cancelled: S2.Cancelled
+	},
+	[F.Service]: {
+		ready_to_deliver: S2.Scheduled,
+		delivering: S2.InProgress,
+		delivered: S2.Done,
+		completed: S2.Done,
+		reversed: S2.Reversed,
+		refunded: S2.Reversed,
+		cancelled: S2.Cancelled
+	}
+} as Record<FulfillmentType, Partial<Record<Oms2OrderStatus, FulfillmentStep>>>;
+
+// Groups that are AHEAD of the slowest one, plus the two service exceptions.
+const STEP_OVERRIDES: Record<string, Partial<Record<FulfillmentType, FulfillmentStep>>> = {
+	o4: { [F.Digital]: S2.Delivered, [F.PickupLater]: S2.Preparing },
+	o17: { [F.Digital]: S2.Delivered },
+	o19: { [F.PickupNow]: S2.PickupAtStore },
+	o21: {
+		[F.PickupNow]: S2.PickupAtStore,
+		[F.PickupLater]: S2.ReadyForPickup,
+		[F.Digital]: S2.Delivered,
+		[F.Service]: S2.Scheduled
+	},
+	o22: { [F.Digital]: S2.Delivered },
+	o32: { [F.Service]: S2.NoShow },
+	o33: { [F.Shipping]: S2.Delivered, [F.Service]: S2.ServiceInterrupted }
+};
+
+const withSteps = (r: Omit<Oms2OrderRow, 'createdAt'>): Omit<Oms2OrderRow, 'createdAt'> => {
+	if (r.status === S.Unknown) return r; // no reliable step for an unmapped order
+	const steps: Partial<Record<FulfillmentType, FulfillmentStep>> = {};
+	for (const t of r.fulfillment.types)
+		steps[t] = STEP_OVERRIDES[r.id]?.[t] ?? STEP_BY_STATUS[t][r.status] ?? S2.Queued;
+	return { ...r, fulfillment: { ...r.fulfillment, steps } };
+};
+
 export const MOCK_OMS2_ORDERS: Oms2OrderRow[] = SEEDS.map(({ daysAgo, ...r }) => ({
-	...r,
+	...withSteps(r),
 	createdAt: day(daysAgo)
 }));
 
@@ -492,7 +600,8 @@ const matchesFilters = (o: Oms2OrderRow, q: Oms2ListQuery): boolean => {
 		anyOf(q.paymentStatuses, [o.paymentStatus]) &&
 		anyOf(q.fulfillments, o.fulfillment.types) &&
 		anyOf(q.statuses, [o.status]) &&
-		anyOf(q.stocks, [o.stock])
+		anyOf(q.stocks, [o.stock]) &&
+		anyOf(q.nextActions, nextActionsOf(o))
 	);
 };
 
@@ -504,11 +613,11 @@ export function queryOms2Orders(
 	const tabCounts = Object.fromEntries(
 		(Object.keys(TAB_STATUSES) as Oms2Tab[]).map((t) => [
 			t,
-			filtered.filter((o) => statusInTab(o.status, t)).length
+			filtered.filter((o) => orderInTab(o, t)).length
 		])
 	) as Record<Oms2Tab, number>;
 	const inTab = filtered
-		.filter((o) => statusInTab(o.status, q.tab))
+		.filter((o) => orderInTab(o, q.tab))
 		.sort((a, b) =>
 			q.sort === 'asc'
 				? a.createdAt.localeCompare(b.createdAt)

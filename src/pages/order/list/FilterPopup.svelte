@@ -18,6 +18,7 @@
 	import {
 		ChannelGroup,
 		FulfillmentType,
+		NextAction,
 		Oms2OrderStatus,
 		Oms2PaymentStatus,
 		Oms2Tab,
@@ -59,6 +60,12 @@
 	};
 
 	$: sections = [
+		// PO Q16: "งานที่ต้องทำต่อ" first — it's the work-queue view (replaces queue chips).
+		{
+			group: 'nextActions',
+			titleKey: 'oms.order.filter.next_action',
+			options: enumOptions(Object.values(NextAction), (v) => `oms.order.next_action.${v}`)
+		},
 		{
 			group: 'channels',
 			titleKey: 'patona-sellercenter-myorder-table-header-saleschannel',
@@ -131,7 +138,14 @@
 	let dateTo: Date | undefined;
 
 	function emptyDraft(): Record<FilterGroup, string[]> {
-		return { channels: [], paymentStatuses: [], fulfillments: [], statuses: [], stocks: [] };
+		return {
+			nextActions: [],
+			channels: [],
+			paymentStatuses: [],
+			fulfillments: [],
+			statuses: [],
+			stocks: []
+		};
 	}
 
 	function syncFromStore() {
@@ -140,7 +154,8 @@
 			paymentStatuses: [...($oFilter.paymentStatuses ?? [])],
 			fulfillments: [...($oFilter.fulfillments ?? [])],
 			statuses: [...($oFilter.statuses ?? [])],
-			stocks: [...($oFilter.stocks ?? [])]
+			stocks: [...($oFilter.stocks ?? [])],
+			nextActions: [...($oFilter.nextActions ?? [])]
 		};
 		dateFrom = $oFilter.createdDate ? new Date($oFilter.createdDate.start) : undefined;
 		dateTo = $oFilter.createdDate ? new Date($oFilter.createdDate.end) : undefined;

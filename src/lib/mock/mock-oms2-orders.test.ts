@@ -106,8 +106,8 @@ describe('helpers', () => {
 			})
 		).toEqual({ kind: 'multi', count: 2 });
 		expect(fulfillmentLabel({ types: [FulfillmentType.Shipping], shippingGroups: 3 })).toEqual({
-			kind: 'groups',
-			count: 3
+			kind: 'single',
+			type: FulfillmentType.Shipping
 		});
 		expect(fulfillmentLabel({ types: [FulfillmentType.PickupNow], shippingGroups: 0 })).toEqual({
 			kind: 'single',
@@ -133,5 +133,52 @@ describe('date range', () => {
 			endDate: `${day}T00:00:00.000Z`
 		});
 		expect(r.rows.map((o) => o.id)).toContain('o1');
+	});
+});
+
+describe('PO answers (DES-2235 comment 48845)', () => {
+	it('refund tab also holds orders whose refund is in flight (U4)', async () => {
+		const {
+			Oms2PaymentStatus: PS,
+			orderInTab,
+			Oms2Tab: T
+		} = await import('$lib/entities/order/oms2-order-list');
+		const cancelledRefunding = { status: Oms2OrderStatus.Cancelled, paymentStatus: PS.Refunding };
+		expect(orderInTab(cancelledRefunding, T.Refund)).toBe(true);
+		expect(orderInTab(cancelledRefunding, T.Cancelled)).toBe(true);
+		expect(
+			orderInTab({ status: Oms2OrderStatus.Cancelled, paymentStatus: PS.Voided }, T.Refund)
+		).toBe(false);
+	});
+
+	it('every known-status row has a step for each of its methods (Q10)', () => {
+		for (const o of MOCK_OMS2_ORDERS.filter((x) => x.status !== Oms2OrderStatus.Unknown))
+			for (const t of o.fulfillment.types) expect(o.fulfillment.steps?.[t]).toBeTruthy();
+	});
+
+	it('no-show and interrupted service cases exist and are flagged (Q4)', async () => {
+		const { FulfillmentStep: FS, hasWarnStep } = await import(
+			'$lib/entities/order/oms2-order-list'
+		);
+		const steps = MOCK_OMS2_ORDERS.flatMap((o) => Object.values(o.fulfillment.steps ?? {}));
+		expect(steps).toContain(FS.NoShow);
+		expect(steps).toContain(FS.ServiceInterrupted);
+		expect(MOCK_OMS2_ORDERS.filter((o) => hasWarnStep(o.fulfillment))).toHaveLength(2);
+	});
+
+	it('list carries only money actions (Q13)', () => {
+		const allowed = ['view', 'record_payment', 'record_cod'];
+		for (const o of MOCK_OMS2_ORDERS) for (const a of o.actions) expect(allowed).toContain(a);
+	});
+
+	it('"งานที่ต้องทำต่อ" filter narrows rows (Q16)', async () => {
+		const { NextAction: NA, nextActionsOf } = await import('$lib/entities/order/oms2-order-list');
+		for (const na of Object.values(NA)) {
+			const r = queryOms2Orders({ ...base, nextActions: [na] });
+			expect(r.total).toBeGreaterThan(0);
+			expect(r.rows.every((o) => nextActionsOf(o).includes(na))).toBe(true);
+		}
+		const cod = queryOms2Orders({ ...base, nextActions: [NA.AwaitingCod] });
+		expect(cod.rows.every((o) => o.paymentStatus === Oms2PaymentStatus.CodPending)).toBe(true);
 	});
 });

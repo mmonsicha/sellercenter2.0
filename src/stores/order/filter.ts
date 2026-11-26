@@ -15,6 +15,7 @@ export type OrderFilterOptions = {
 	fulfillments?: string[];
 	statuses?: string[];
 	stocks?: string[];
+	nextActions?: string[]; // "งานที่ต้องทำต่อ" (PO Q16)
 };
 
 export type OrderFilter = OrderFilterOptions & {
@@ -29,7 +30,8 @@ export const FILTER_QUERY_KEYS = {
 	paymentStatuses: 'paymentStatus',
 	fulfillments: 'fulfillment',
 	statuses: 'status',
-	stocks: 'stock'
+	stocks: 'stock',
+	nextActions: 'todo'
 } as const;
 
 export type FilterGroup = keyof typeof FILTER_QUERY_KEYS;
@@ -49,7 +51,8 @@ const emptyOptions = (): OrderFilterOptions => ({
 	paymentStatuses: undefined,
 	fulfillments: undefined,
 	statuses: undefined,
-	stocks: undefined
+	stocks: undefined,
+	nextActions: undefined
 });
 
 const nonEmpty = (a?: string[]) => (a?.length ? a : undefined);
@@ -63,6 +66,7 @@ export const setFilter = (o: OrderFilterOptions) => {
 		fulfillments: nonEmpty(o.fulfillments),
 		statuses: nonEmpty(o.statuses),
 		stocks: nonEmpty(o.stocks),
+		nextActions: nonEmpty(o.nextActions),
 		total: countActiveFilters(o)
 	}));
 };

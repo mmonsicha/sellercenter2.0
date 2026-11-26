@@ -2,6 +2,7 @@
 	import { loadOms2Orders, oms2OrderList } from '$stores/order/oms2-order-list';
 	import {
 		FulfillmentType,
+		NextAction,
 		Oms2OrderStatus,
 		Oms2PaymentStatus,
 		Oms2Tab,
@@ -103,7 +104,8 @@
 			paymentStatuses: delimitedQuery({ key: FILTER_QUERY_KEYS.paymentStatuses }),
 			fulfillments: delimitedQuery({ key: FILTER_QUERY_KEYS.fulfillments }),
 			statuses: delimitedQuery({ key: FILTER_QUERY_KEYS.statuses }),
-			stocks: delimitedQuery({ key: FILTER_QUERY_KEYS.stocks })
+			stocks: delimitedQuery({ key: FILTER_QUERY_KEYS.stocks }),
+			nextActions: delimitedQuery({ key: FILTER_QUERY_KEYS.nextActions })
 		});
 
 		search = parsed.search;
@@ -128,6 +130,7 @@
 		$oFilter.fulfillments = onlyValid(parsed.fulfillments, FulfillmentType);
 		$oFilter.statuses = onlyValid(parsed.statuses, Oms2OrderStatus);
 		$oFilter.stocks = onlyValid(parsed.stocks, StockState);
+		$oFilter.nextActions = onlyValid(parsed.nextActions, NextAction);
 		// Badge count is derived, never trusted from the URL.
 		$oFilter.total = countActiveFilters($oFilter);
 	};
@@ -216,7 +219,8 @@
 					paymentStatuses: $oFilter.paymentStatuses,
 					fulfillments: $oFilter.fulfillments,
 					statuses: $oFilter.statuses,
-					stocks: $oFilter.stocks
+					stocks: $oFilter.stocks,
+					nextActions: $oFilter.nextActions
 				})
 			].join('|');
 			const isInitialLoad = initialKey !== lastInitialKey;
@@ -263,7 +267,8 @@
 				paymentStatuses: $oFilter.paymentStatuses as Oms2PaymentStatus[] | undefined,
 				fulfillments: $oFilter.fulfillments as FulfillmentType[] | undefined,
 				statuses: $oFilter.statuses as Oms2OrderStatus[] | undefined,
-				stocks: $oFilter.stocks as StockState[] | undefined
+				stocks: $oFilter.stocks as StockState[] | undefined,
+				nextActions: $oFilter.nextActions as NextAction[] | undefined
 			});
 		} catch (error) {
 			if (error instanceof AxiosError) {

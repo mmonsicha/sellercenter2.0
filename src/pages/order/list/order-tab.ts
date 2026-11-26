@@ -3,7 +3,9 @@
 // a future adapter share it; this file is purely the page's presentation config.
 import {
 	ChannelGroup,
+	FulfillmentStep,
 	FulfillmentType,
+	WARN_STEPS,
 	StockState,
 	fulfillmentLabel,
 	type Oms2Channel,
@@ -122,8 +124,6 @@ export const fulfillmentDisplay = (f: Oms2Fulfillment): { key: string; count?: n
 	switch (l.kind) {
 		case 'multi':
 			return { key: 'oms.order.fulfillment.multi', count: l.count };
-		case 'groups':
-			return { key: 'oms.order.fulfillment.groups', count: l.count };
 		case 'single':
 			return { key: `oms.order.fulfillment.${l.type}` };
 		default:
@@ -144,7 +144,6 @@ export type FulfillmentBadge = {
 	type: FulfillmentType;
 	icon: string;
 	key: string;
-	groups?: number; // shipping split across >1 address → "(N กลุ่ม)"
 };
 
 // One badge per distinct method, in data order. The cell shows the first and a "+N"
@@ -153,8 +152,7 @@ export const fulfillmentBadges = (f: Oms2Fulfillment): FulfillmentBadge[] =>
 	f.types.map((type) => ({
 		type,
 		icon: FULFILLMENT_ICON[type],
-		key: `oms.order.fulfillment.${type}`,
-		groups: type === FulfillmentType.Shipping && f.shippingGroups > 1 ? f.shippingGroups : undefined
+		key: `oms.order.fulfillment.${type}`
 	}));
 
 // Same icons as the sale page channel switcher (Cart.svelte channel options).
@@ -174,12 +172,17 @@ const CHANNEL_BRAND_COLOR: Record<string, string> = {
 	shopee: '#EE4D2D',
 	lazada: '#0F146D',
 	tiktok: '#111111',
-	openApi: 'var(--ssk-colors-gray-600)',
-	unknown: 'var(--ssk-colors-gray-500)'
+	openApi: 'var(--ssk-colors-gray-500)',
+	unknown: 'var(--ssk-colors-gray-400)'
 };
 
 export const channelColor = (c: Oms2Channel): string => {
-	if (c.group === ChannelGroup.Store) return 'var(--ssk-colors-primary-500)';
+	// PO U8: POS uses a neutral colour so it never reads like Shopee's orange.
+	if (c.group === ChannelGroup.Store) return 'var(--ssk-colors-gray-700)';
 	if (c.group === ChannelGroup.Link) return 'var(--ssk-colors-sky-500, #0EA5E9)';
 	return CHANNEL_BRAND_COLOR[c.source ?? 'unknown'] ?? CHANNEL_BRAND_COLOR.unknown;
 };
+
+// Per-group step label (PO Q10) and warning flag (PO Q4).
+export const stepKey = (s: FulfillmentStep) => `oms.order.step.${s}`;
+export const isWarnStep = (s?: FulfillmentStep) => !!s && WARN_STEPS.includes(s);
